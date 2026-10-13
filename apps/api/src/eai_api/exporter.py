@@ -11,6 +11,18 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from .models import TakeoffResult
 
 
+def sanitize_cell(value: object) -> object:
+    """Sanitize cell against CSV/Formula Injection (OWASP).
+
+    If a text cell starts with '=', '+', '-', '@', '\\t', or '\\r', prefix with
+    a single quote so spreadsheets treat it strictly as a string literal.
+    """
+    if isinstance(value, str) and value:
+        if value[0] in ("=", "+", "-", "@", "\t", "\r"):
+            return f"'{value}"
+    return value
+
+
 def export_csv_summary(result: TakeoffResult) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -29,16 +41,16 @@ def export_csv_summary(result: TakeoffResult) -> bytes:
     ])
     for row in result.summary:
         writer.writerow([
-            row.item_code,
-            row.item_name,
-            row.specification,
-            row.unit,
+            sanitize_cell(row.item_code),
+            sanitize_cell(row.item_name),
+            sanitize_cell(row.specification),
+            sanitize_cell(row.unit),
             row.quantity,
             row.quantity_method.value,
             row.review_status.value,
-            row.drawing_name,
-            row.drawing_revision,
-            row.notes,
+            sanitize_cell(row.drawing_name),
+            sanitize_cell(row.drawing_revision),
+            sanitize_cell(row.notes),
         ])
     return buf.getvalue().encode("utf-8-sig")
 
@@ -63,18 +75,18 @@ def export_csv_evidence(result: TakeoffResult) -> bytes:
     ])
     for row in result.evidence:
         writer.writerow([
-            row.source_object_id,
-            row.drawing_id,
-            row.parent_source_id or "",
-            row.block_name,
-            row.layer_name,
-            row.entity_type,
+            sanitize_cell(row.source_object_id),
+            sanitize_cell(row.drawing_id),
+            sanitize_cell(row.parent_source_id or ""),
+            sanitize_cell(row.block_name),
+            sanitize_cell(row.layer_name),
+            sanitize_cell(row.entity_type),
             round(row.x, 3),
             round(row.y, 3),
-            row.mapped_item_code,
+            sanitize_cell(row.mapped_item_code),
             row.inclusion_status.value,
             row.review_status.value,
-            row.review_reason,
+            sanitize_cell(row.review_reason),
         ])
     return buf.getvalue().encode("utf-8-sig")
 
@@ -116,16 +128,16 @@ def export_xlsx(result: TakeoffResult) -> bytes:
 
     for r in result.summary:
         ws_sum.append([
-            r.item_code,
-            r.item_name,
-            r.specification,
-            r.unit,
+            sanitize_cell(r.item_code),
+            sanitize_cell(r.item_name),
+            sanitize_cell(r.specification),
+            sanitize_cell(r.unit),
             r.quantity,
             r.quantity_method.value,
             r.review_status.value,
-            r.drawing_name,
-            r.drawing_revision,
-            r.notes,
+            sanitize_cell(r.drawing_name),
+            sanitize_cell(r.drawing_revision),
+            sanitize_cell(r.notes),
         ])
         curr_row = ws_sum.max_row
         for col_num in range(1, len(summary_headers) + 1):
@@ -163,18 +175,18 @@ def export_xlsx(result: TakeoffResult) -> bytes:
 
     for ev in result.evidence:
         ws_ev.append([
-            ev.source_object_id,
-            ev.drawing_id,
-            ev.parent_source_id or "",
-            ev.block_name,
-            ev.layer_name,
-            ev.entity_type,
+            sanitize_cell(ev.source_object_id),
+            sanitize_cell(ev.drawing_id),
+            sanitize_cell(ev.parent_source_id or ""),
+            sanitize_cell(ev.block_name),
+            sanitize_cell(ev.layer_name),
+            sanitize_cell(ev.entity_type),
             round(ev.x, 3),
             round(ev.y, 3),
-            ev.mapped_item_code,
+            sanitize_cell(ev.mapped_item_code),
             ev.inclusion_status.value,
             ev.review_status.value,
-            ev.review_reason,
+            sanitize_cell(ev.review_reason),
         ])
         curr_row = ws_ev.max_row
         for col_num in range(1, len(evidence_headers) + 1):

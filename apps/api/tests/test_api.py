@@ -415,3 +415,72 @@ def test_review_confirm_preserves_included_quantity(client: TestClient) -> None:
     assert updated_ev["review_status"] == "REVIEWED"
     assert updated_ev["inclusion_status"] == "INCLUDED"
     assert updated_ev["review_reason"] == "현장 확인 완료"
+
+
+def test_export_formula_injection_defense(client: TestClient) -> None:
+    # Verifies Issue #7 defense: OWASP CSV & Excel formula injection
+    proj_res = client.post("/api/projects", json={"name": "수식 인젝션 방어 테스트"})
+    project_id = proj_res.json()["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Inject formula characters (=, +, -, @) in mappings and review notes
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {
+                "block_name": "LT-DL",
+                "item_code": "=cmd|' /C calc'!A0",
+                "item_name": "@SUM(1,1)",
+                "unit": "EA",
+            }
+        ],
+    )
+
+    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    first_ev = t1["evidence"][0]
+
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": first_ev["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "reason": "+cmd|' /C calc'!A0",
+            }
+        ],
+    )
+
+    # 1. Check CSV Summary
+    csv_sum_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=summary")
+    assert csv_sum_res.status_code == 200
+    csv_sum_text = csv_sum_res.text
+    # Must be sanitized with leading quote
+    assert "'=cmd|' /C calc'!A0" in csv_sum_text
+    assert "'@SUM(1,1)" in csv_sum_text
+
+    # 2. Check CSV Evidence
+    csv_ev_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=evidence")
+    assert csv_ev_res.status_code == 200
+    csv_ev_text = csv_ev_res.text
+    assert "'+cmd|' /C calc'!A0" in csv_ev_text
+
+    # 3. Check Excel XLSX
+    xlsx_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx")
+    assert xlsx_res.status_code == 200
+    assert len(xlsx_res.content) > 1000
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_res.content))
+    assert "Takeoff Summary" in wb.sheetnames
+    assert "Takeoff Evidence" in wb.sheetnames
+    ws_sum = wb["Takeoff Summary"]
+    # Row 2, column 1 is item_code
+    assert str(ws_sum.cell(row=2, column=1).value).startswith("'=")
+    assert str(ws_sum.cell(row=2, column=2).value).startswith("'@")
+
