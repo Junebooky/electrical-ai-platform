@@ -4,6 +4,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { NormalizedDrawing } from "@/types/cad";
 import { ZoomIn, ZoomOut, Maximize2, PlusCircle } from "lucide-react";
 
+export interface ManualMarker {
+  id: string;
+  x: number;
+  y: number;
+  item_code: string;
+  item_name?: string | null;
+  note?: string;
+}
+
 interface CadViewerProps {
   drawing: NormalizedDrawing;
   selectedObjectId: string | null;
@@ -12,6 +21,7 @@ interface CadViewerProps {
   onSelectObject: (objectId: string | null) => void;
   isAddManualMode?: boolean;
   onAddManualPoint?: (x: number, y: number) => void;
+  manualMarkers?: ManualMarker[];
 }
 
 export function CadViewer({
@@ -22,6 +32,7 @@ export function CadViewer({
   onSelectObject,
   isAddManualMode = false,
   onAddManualPoint,
+  manualMarkers = [],
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -278,8 +289,8 @@ export function CadViewer({
             const isSelected = obj.id === selectedObjectId;
             const isHighlighted = highlightedSet.has(obj.id);
 
-            // Radius for clickable symbol target
-            const markerRadius = Math.max(120, 16 / scale);
+            // Radius for clickable symbol target (strictly 16 screen pixels regardless of zoom or CAD units)
+            const markerRadius = 16 / Math.max(scale, 1e-6);
 
             return (
               <g
@@ -335,6 +346,53 @@ export function CadViewer({
                       : "rgba(148, 163, 184, 0.3)"
                   }
                   strokeWidth={1.5 / scale}
+                />
+              </g>
+            );
+          })}
+
+          {/* Interactive Manual Markers (Manually Added Objects) */}
+          {manualMarkers.map((m) => {
+            const isSelected = m.id === selectedObjectId;
+            const isHighlighted = highlightedSet.has(m.id);
+            const mRadius = 16 / Math.max(scale, 1e-6);
+
+            return (
+              <g
+                key={m.id}
+                transform={`translate(${m.x}, ${-m.y})`}
+                className="pointer-events-auto cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectObject(m.id);
+                }}
+              >
+                {isSelected && (
+                  <circle
+                    cx={0}
+                    cy={0}
+                    r={mRadius * 1.6}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth={4 / scale}
+                    className="animate-pulse"
+                  />
+                )}
+                <rect
+                  x={-mRadius * 0.75}
+                  y={-mRadius * 0.75}
+                  width={mRadius * 1.5}
+                  height={mRadius * 1.5}
+                  transform="rotate(45)"
+                  fill={
+                    isSelected
+                      ? "rgba(56, 189, 248, 0.5)"
+                      : isHighlighted
+                      ? "rgba(245, 158, 11, 0.6)"
+                      : "rgba(245, 158, 11, 0.35)"
+                  }
+                  stroke="#f59e0b"
+                  strokeWidth={2 / scale}
                 />
               </g>
             );

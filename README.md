@@ -46,7 +46,7 @@ npm --prefix apps/web install
 ### 2) 백엔드 API 서버 실행 (포트 8000)
 ```bash
 # 로컬 단일 사용자 보안 정책에 따라 127.0.0.1 루프백 바인딩을 기본 권장합니다.
-uv run uvicorn eai_api.app:app --host 127.0.0.1 --port 8000 --reload
+PYTHONPATH=apps/api/src:packages/cad_engine/src uv run uvicorn eai_api.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ### 3) 프론트엔드 웹 앱 실행 (포트 3000)

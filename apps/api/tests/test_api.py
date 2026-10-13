@@ -265,6 +265,112 @@ def test_structural_blocking_defense_ac_06(client: TestClient) -> None:
     assert xref_ev2["review_status"] == "UNRESOLVED"
     assert "구조적 결함" in xref_ev2["review_reason"]
 
+    # AC-06/FR-011: Verify summary row explicitly marks LIGHT as UNRESOLVED due to unresolved XREF
+    light_sum = next(r for r in t2["summary"] if r["item_code"] == "LIGHT")
+    assert light_sum["review_status"] == "UNRESOLVED"
+    assert "미해결 객체" in light_sum["notes"]
+
+
+def test_binary_dxf_direct_parse_and_upload(client: TestClient) -> None:
+    # 1. Direct parse real AutoCAD binary DXF
+    bin_file = FIXTURES_DIR / "binary_devices.dxf"
+    res = client.post(
+        "/api/dxf/parse-direct",
+        files={"file": (bin_file.name, bin_file.read_bytes(), "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["objects"]) == 18
+    assert data["source"]["filename"] == "binary_devices.dxf"
+
+    # 2. Upload to project and calculate takeoff
+    proj_res = client.post("/api/projects", json={"name": "바이너리 DXF 프로젝트"})
+    project_id = proj_res.json()["id"]
+
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (bin_file.name, bin_file.read_bytes(), "application/octet-stream")},
+    )
+    assert upload_res.status_code == 200
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Map blocks
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA"},
+            {"block_name": "OT-2P", "item_code": "OUTLET", "unit": "EA"},
+            {"block_name": "SW-1", "item_code": "SWITCH", "unit": "EA"},
+        ],
+    )
+
+    takeoff = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    sum_map = {row["item_code"]: row["quantity"] for row in takeoff["summary"]}
+    assert sum_map == {"LIGHT": 6, "OUTLET": 4, "SWITCH": 3}
+
+
+def test_manual_object_override_and_delete(client: TestClient) -> None:
+    proj_res = client.post("/api/projects", json={"name": "수동 기구 관리 테스트"})
+    project_id = proj_res.json()["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Map LT-DL to LIGHT
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[{"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA"}],
+    )
+
+    # 1. Add manual object as LIGHT
+    manual_id = "manual_test_100"
+    client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": manual_id,
+            "drawing_id": drawing_id,
+            "x": 100.0,
+            "y": 200.0,
+            "item_code": "LIGHT",
+            "item_name": "수동 추가 조명",
+            "note": "현장 추가",
+        },
+    )
+
+    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    assert next(r for r in t1["summary"] if r["item_code"] == "LIGHT")["quantity"] == 7
+
+    # 2. Apply review override to manual object (change item_code to OUTLET)
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": manual_id,
+                "inclusion_status": "MANUAL_ADDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "OUTLET",
+                "reason": "조명이 아닌 콘센트로 정정",
+            }
+        ],
+    )
+
+    t2 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    assert next(r for r in t2["summary"] if r["item_code"] == "LIGHT")["quantity"] == 6
+    assert next(r for r in t2["summary"] if r["item_code"] == "OUTLET")["quantity"] == 1
+
+    # 3. Delete manual object
+    del_res = client.delete(f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects/{manual_id}")
+    assert del_res.status_code == 200
+
+    t3 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    assert next(r for r in t3["summary"] if r["item_code"] == "LIGHT")["quantity"] == 6
+    outlet_row = next((r for r in t3["summary"] if r["item_code"] == "OUTLET"), None)
+    assert outlet_row is None or outlet_row["quantity"] == 0
+
 
 def test_review_confirm_preserves_included_quantity(client: TestClient) -> None:
     # Verifies the "검수 확인" workflow: marking INCLUDED as REVIEWED preserves quantity

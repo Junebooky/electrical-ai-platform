@@ -328,6 +328,20 @@ def build_takeoff_result(
 
     # 2. Process Manual Objects
     for mo in manual_objects:
+        mapped_item_code = mo.item_code
+        inc_status = InclusionStatus.MANUAL_ADDED
+        rev_status = ReviewStatus.REVIEWED
+        reason = mo.note or "수동 추가 기구"
+
+        override = reviews.get(mo.id)
+        if override:
+            inc_status = override.inclusion_status
+            rev_status = override.review_status
+            if override.mapped_item_code:
+                mapped_item_code = override.mapped_item_code
+            if override.reason:
+                reason = override.reason
+
         evidence_rows.append(
             TakeoffEvidenceRow(
                 source_object_id=mo.id,
@@ -338,10 +352,10 @@ def build_takeoff_result(
                 entity_type="MANUAL_POINT",
                 x=mo.x,
                 y=mo.y,
-                mapped_item_code=mo.item_code,
-                inclusion_status=InclusionStatus.MANUAL_ADDED,
-                review_status=ReviewStatus.REVIEWED,
-                review_reason=mo.note or "수동 추가 기구",
+                mapped_item_code=mapped_item_code,
+                inclusion_status=inc_status,
+                review_status=rev_status,
+                review_reason=reason,
             )
         )
 
@@ -352,14 +366,20 @@ def build_takeoff_result(
     review_states: dict[str, set[ReviewStatus]] = {}
 
     for ev in evidence_rows:
+        code = ev.mapped_item_code
+        if not code or code in ("UNMAPPED", "EXCLUDE"):
+            continue
+
         if ev.inclusion_status in (InclusionStatus.INCLUDED, InclusionStatus.MANUAL_ADDED):
-            code = ev.mapped_item_code
-            if code and code != "UNMAPPED" and code != "EXCLUDE":
-                counts[code] = counts.get(code, 0) + 1
-                methods.setdefault(code, set()).add(
-                    "MANUAL" if ev.inclusion_status == InclusionStatus.MANUAL_ADDED else "CAD_BLOCK"
-                )
-                review_states.setdefault(code, set()).add(ev.review_status)
+            counts[code] = counts.get(code, 0) + 1
+            methods.setdefault(code, set()).add(
+                "MANUAL" if ev.inclusion_status == InclusionStatus.MANUAL_ADDED else "CAD_BLOCK"
+            )
+            review_states.setdefault(code, set()).add(ev.review_status)
+        elif ev.review_status == ReviewStatus.UNRESOLVED:
+            # AC-06 / FR-011: Excluded UNRESOLVED evidence (such as structural XREFs, missing blocks)
+            # must also be reflected in the overall item review status so unverified quantities aren't concealed.
+            review_states.setdefault(code, set()).add(ReviewStatus.UNRESOLVED)
 
     summary_rows: list[TakeoffSummaryRow] = []
     drawing_name = meta.get("filename", drawing.source.filename)
@@ -379,8 +399,10 @@ def build_takeoff_result(
             q_method = QuantityMethod.CAD_BLOCK
 
         r_set = review_states.get(code, set())
+        notes = ""
         if ReviewStatus.UNRESOLVED in r_set:
             r_status = ReviewStatus.UNRESOLVED
+            notes = "미해결 객체(XREF/정의누락 등) 포함 - 현장 확인 필요"
         elif ReviewStatus.UNREVIEWED in r_set or not r_set:
             r_status = ReviewStatus.UNREVIEWED
         else:
@@ -402,7 +424,7 @@ def build_takeoff_result(
                 review_status=r_status,
                 drawing_name=drawing_name,
                 drawing_revision=revision,
-                notes="",
+                notes=notes,
             )
         )
 

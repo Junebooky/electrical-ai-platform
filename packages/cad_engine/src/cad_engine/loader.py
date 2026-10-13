@@ -18,6 +18,8 @@ from typing import Any
 
 import ezdxf
 from ezdxf import recover
+from ezdxf.document import Drawing
+from ezdxf.lldxf.tagger import binary_tags_loader
 
 DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MiB; revisit after A02-T002 measurements
 
@@ -105,9 +107,15 @@ def load_dxf_bytes(data: bytes, *, max_bytes: int = DEFAULT_MAX_FILE_BYTES) -> L
     sniff(data)
     try:
         if data.startswith(_BINARY_DXF_SENTINEL):
-            # recover.read() handles ASCII only; binary DXF goes through the strict loader.
-            doc = ezdxf.read(io.BytesIO(data))  # type: ignore[arg-type]
-            return LoadedDxf(doc=doc, audit_fixes=0, audit_errors=0)
+            # recover.read() handles ASCII only; binary DXF is loaded via binary_tags_loader.
+            loader = binary_tags_loader(data, errors="surrogateescape")
+            doc = Drawing.load(loader)
+            auditor = doc.audit()
+            return LoadedDxf(
+                doc=doc,
+                audit_fixes=len(auditor.fixes),
+                audit_errors=len(auditor.errors),
+            )
         doc, auditor = recover.read(io.BytesIO(data))
     except ezdxf.DXFStructureError as exc:
         raise DxfLoadError(LoadErrorCode.DXF_STRUCTURE_ERROR, str(exc)) from exc

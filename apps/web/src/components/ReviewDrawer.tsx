@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { SourceObject, TakeoffEvidenceRow, ItemMappingRule } from "@/types/cad";
-import { X, CheckCircle, Ban, MapPin } from "lucide-react";
+import { X, CheckCircle, Ban, MapPin, Trash2 } from "lucide-react";
 
 interface ReviewDrawerProps {
   object: SourceObject | null;
@@ -10,10 +10,11 @@ interface ReviewDrawerProps {
   mappings: ItemMappingRule[];
   onUpdateReview: (
     objectId: string,
-    inclusionStatus: "INCLUDED" | "EXCLUDED",
+    inclusionStatus: "INCLUDED" | "EXCLUDED" | "MANUAL_ADDED",
     mappedItemCode?: string,
     reason?: string
   ) => Promise<void>;
+  onDeleteManualObject?: (objectId: string) => Promise<void>;
   onClose: () => void;
   isSaving: boolean;
 }
@@ -35,12 +36,22 @@ function ReviewDrawerContent({
   evidence,
   mappings,
   onUpdateReview,
+  onDeleteManualObject,
   onClose,
   isSaving,
   objectId,
 }: ContentProps) {
-  const blockName = object?.block_name || evidence?.block_name || "";
-  const layerName = object?.layer || evidence?.layer_name || "";
+  const isManual =
+    evidence?.inclusion_status === "MANUAL_ADDED" ||
+    evidence?.entity_type === "MANUAL_POINT" ||
+    objectId.startsWith("manual_");
+
+  const blockName = isManual
+    ? evidence?.mapped_item_code
+      ? `[${evidence.mapped_item_code}] 수동 추가 기구`
+      : "수동 추가 기구"
+    : object?.block_name || evidence?.block_name || "";
+  const layerName = isManual ? "MANUAL" : object?.layer || evidence?.layer_name || "";
   const coordX = object?.insert_point?.[0] ?? evidence?.x ?? 0;
   const coordY = object?.insert_point?.[1] ?? evidence?.y ?? 0;
   const currentStatus = evidence?.inclusion_status || "INCLUDED";
@@ -53,9 +64,9 @@ function ReviewDrawerContent({
   const handleConfirmReview = async () => {
     await onUpdateReview(
       objectId,
-      "INCLUDED",
+      isManual ? "MANUAL_ADDED" : "INCLUDED",
       selectedItemCode !== "UNMAPPED" ? selectedItemCode : undefined,
-      reasonInput || "사용자 검수 확인 완료"
+      reasonInput || (isManual ? "수동 기구 품목 확인" : "사용자 검수 확인 완료")
     );
   };
 
@@ -71,7 +82,7 @@ function ReviewDrawerContent({
   const handleRestore = async () => {
     await onUpdateReview(
       objectId,
-      "INCLUDED",
+      isManual ? "MANUAL_ADDED" : "INCLUDED",
       selectedItemCode !== "UNMAPPED" ? selectedItemCode : undefined,
       reasonInput || "사용자 수동 복원"
     );
@@ -82,7 +93,7 @@ function ReviewDrawerContent({
       <div className="flex items-start justify-between border-b border-slate-800 pb-2.5">
         <div>
           <span className="text-[10px] font-mono uppercase tracking-wider text-sky-400 font-bold">
-            선택된 CAD 기구 객체
+            {isManual ? "현장 보정 수동 기구" : "선택된 CAD 기구 객체"}
           </span>
           <h3 className="text-sm font-bold text-white mt-0.5">{blockName}</h3>
         </div>
@@ -110,7 +121,7 @@ function ReviewDrawerContent({
           <div className="flex items-center gap-1.5">
             <span
               className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                currentStatus === "INCLUDED"
+                currentStatus === "INCLUDED" || currentStatus === "MANUAL_ADDED"
                   ? "bg-emerald-500/20 text-emerald-400"
                   : currentStatus === "EXCLUDED"
                   ? "bg-red-500/20 text-red-400"
@@ -136,7 +147,7 @@ function ReviewDrawerContent({
         {/* Change Item Code */}
         <div className="pt-2 border-t border-slate-800">
           <label className="text-[11px] text-slate-400 block mb-1">
-            연결 적산 품목 변경
+            연결 적산 품목 {isManual ? "변경" : "변경"}
           </label>
           <select
             value={selectedItemCode}
@@ -171,7 +182,28 @@ function ReviewDrawerContent({
 
       {/* Action Buttons */}
       <div className="pt-3 border-t border-slate-800 flex items-center gap-2">
-        {currentStatus === "INCLUDED" ? (
+        {isManual ? (
+          <>
+            <button
+              onClick={handleConfirmReview}
+              disabled={isSaving}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
+            >
+              <CheckCircle size={14} />
+              품목/메모 저장
+            </button>
+            {onDeleteManualObject && (
+              <button
+                onClick={() => onDeleteManualObject(objectId)}
+                disabled={isSaving}
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-red-600/90 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
+              >
+                <Trash2 size={14} />
+                수동 기구 삭제
+              </button>
+            )}
+          </>
+        ) : currentStatus === "INCLUDED" ? (
           <>
             <button
               onClick={handleConfirmReview}

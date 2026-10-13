@@ -169,10 +169,10 @@ export default function WorkspacePage() {
     }
   };
 
-  // Update Review (Exclude/Restore)
+  // Update Review (Exclude/Restore/Manual Update)
   const handleUpdateReview = async (
     objectId: string,
-    inclusionStatus: "INCLUDED" | "EXCLUDED",
+    inclusionStatus: "INCLUDED" | "EXCLUDED" | "MANUAL_ADDED",
     mappedItemCode?: string,
     reason?: string
   ) => {
@@ -219,6 +219,21 @@ export default function WorkspacePage() {
     }
   };
 
+  // Delete Manual Object
+  const handleDeleteManualObject = async (manualId: string) => {
+    if (!currentProject || !currentDrawing) return;
+    setIsSaving(true);
+    try {
+      await api.deleteManualObject(currentProject.id, currentDrawing.drawing_id, manualId);
+      setSelectedObjectId(null);
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+    } catch (err: unknown) {
+      setErrorMessage("수동 기구 삭제 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   // Toggle Layer visibility
   const toggleLayer = (layerName: string) => {
     setHiddenLayers((prev) => {
@@ -247,6 +262,20 @@ export default function WorkspacePage() {
       .filter((e) => e.mapped_item_code === highlightedItemCode && e.inclusion_status === "INCLUDED")
       .map((e) => e.source_object_id);
   }, [highlightedItemCode, takeoff]);
+
+  // Manually added markers for interactive canvas rendering
+  const manualMarkers = useMemo(() => {
+    if (!takeoff) return [];
+    return takeoff.evidence
+      .filter((e) => e.inclusion_status === "MANUAL_ADDED")
+      .map((e) => ({
+        id: e.source_object_id,
+        x: e.x,
+        y: e.y,
+        item_code: e.mapped_item_code,
+        note: e.review_reason,
+      }));
+  }, [takeoff]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
@@ -384,6 +413,7 @@ export default function WorkspacePage() {
                 onSelectObject={(id) => setSelectedObjectId(id)}
                 isAddManualMode={isAddManualMode}
                 onAddManualPoint={handleAddManualPoint}
+                manualMarkers={manualMarkers}
               />
 
               {/* Floating Review Drawer when object is selected */}
@@ -392,6 +422,7 @@ export default function WorkspacePage() {
                 evidence={selectedEvidence}
                 mappings={mappings}
                 onUpdateReview={handleUpdateReview}
+                onDeleteManualObject={handleDeleteManualObject}
                 onClose={() => setSelectedObjectId(null)}
                 isSaving={isSaving}
               />
