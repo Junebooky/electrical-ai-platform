@@ -196,3 +196,17 @@ export interface ProjectMetadata {
   updated_at: string;
   drawing_count: number;
 }
+
+export interface DrawingSummary {
+  id: string;
+  project_id: string;
+  filename: string;
+  file_hash: string;
+  revision: string;
+  units_name: string;
+  insunits: number;
+  created_at: string;
+  objects_count: number;
+  warnings_count: number;
+}
+

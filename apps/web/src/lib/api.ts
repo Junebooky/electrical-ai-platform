@@ -4,6 +4,7 @@ import {
   ManualObjectItem,
   NormalizedDrawing,
   ProjectMetadata,
+  DrawingSummary,
   TakeoffResult,
 } from "@/types/cad";
 
@@ -75,6 +76,11 @@ export const api = {
         body: formData,
       }
     );
+    return handleResponse(res);
+  },
+
+  listDrawings: async (projectId: string): Promise<DrawingSummary[]> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings`);
     return handleResponse(res);
   },
 

@@ -44,17 +44,36 @@ function ReviewDrawerContent({
   const coordX = object?.insert_point?.[0] ?? evidence?.x ?? 0;
   const coordY = object?.insert_point?.[1] ?? evidence?.y ?? 0;
   const currentStatus = evidence?.inclusion_status || "INCLUDED";
+  const reviewStatus = evidence?.review_status || "UNREVIEWED";
   const defaultItemCode = evidence?.mapped_item_code || "UNMAPPED";
 
   const [selectedItemCode, setSelectedItemCode] = useState(defaultItemCode);
   const [reasonInput, setReasonInput] = useState(evidence?.review_reason || "");
 
-  const handleSetStatus = async (status: "INCLUDED" | "EXCLUDED") => {
+  const handleConfirmReview = async () => {
     await onUpdateReview(
       objectId,
-      status,
-      selectedItemCode,
-      reasonInput || (status === "EXCLUDED" ? "사용자 오탐 제외" : "사용자 수동 복원")
+      "INCLUDED",
+      selectedItemCode !== "UNMAPPED" ? selectedItemCode : undefined,
+      reasonInput || "사용자 검수 확인 완료"
+    );
+  };
+
+  const handleExclude = async () => {
+    await onUpdateReview(
+      objectId,
+      "EXCLUDED",
+      selectedItemCode !== "UNMAPPED" ? selectedItemCode : undefined,
+      reasonInput || "사용자 오탐 제외"
+    );
+  };
+
+  const handleRestore = async () => {
+    await onUpdateReview(
+      objectId,
+      "INCLUDED",
+      selectedItemCode !== "UNMAPPED" ? selectedItemCode : undefined,
+      reasonInput || "사용자 수동 복원"
     );
   };
 
@@ -88,17 +107,30 @@ function ReviewDrawerContent({
         </div>
         <div className="flex items-center justify-between text-slate-400">
           <span>현재 상태</span>
-          <span
-            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-              currentStatus === "INCLUDED"
-                ? "bg-emerald-500/20 text-emerald-400"
-                : currentStatus === "EXCLUDED"
-                ? "bg-red-500/20 text-red-400"
-                : "bg-amber-500/20 text-amber-400"
-            }`}
-          >
-            {currentStatus}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                currentStatus === "INCLUDED"
+                  ? "bg-emerald-500/20 text-emerald-400"
+                  : currentStatus === "EXCLUDED"
+                  ? "bg-red-500/20 text-red-400"
+                  : "bg-amber-500/20 text-amber-400"
+              }`}
+            >
+              {currentStatus}
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                reviewStatus === "REVIEWED"
+                  ? "bg-sky-500/20 text-sky-400"
+                  : reviewStatus === "UNRESOLVED"
+                  ? "bg-amber-500/20 text-amber-400"
+                  : "bg-slate-700/60 text-slate-400"
+              }`}
+            >
+              {reviewStatus}
+            </span>
+          </div>
         </div>
 
         {/* Change Item Code */}
@@ -131,7 +163,7 @@ function ReviewDrawerContent({
             type="text"
             value={reasonInput}
             onChange={(e) => setReasonInput(e.target.value)}
-            placeholder="예: 설계변경 미시공, 도면 표기 오탐"
+            placeholder="예: 설계변경 미시공, 도면 표기 오탐, 현장 검증 완료"
             className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
           />
         </div>
@@ -140,17 +172,27 @@ function ReviewDrawerContent({
       {/* Action Buttons */}
       <div className="pt-3 border-t border-slate-800 flex items-center gap-2">
         {currentStatus === "INCLUDED" ? (
-          <button
-            onClick={() => handleSetStatus("EXCLUDED")}
-            disabled={isSaving}
-            className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-red-600/90 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
-          >
-            <Ban size={14} />
-            오탐 제외 처리
-          </button>
+          <>
+            <button
+              onClick={handleConfirmReview}
+              disabled={isSaving}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
+            >
+              <CheckCircle size={14} />
+              {reviewStatus === "REVIEWED" ? "검수 확인 유지" : "검수 확인"}
+            </button>
+            <button
+              onClick={handleExclude}
+              disabled={isSaving}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-red-600/90 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
+            >
+              <Ban size={14} />
+              오탐 제외
+            </button>
+          </>
         ) : (
           <button
-            onClick={() => handleSetStatus("INCLUDED")}
+            onClick={handleRestore}
             disabled={isSaving}
             className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
           >

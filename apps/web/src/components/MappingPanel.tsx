@@ -43,12 +43,23 @@ export function MappingPanel({
         specification: "",
         unit: "EA",
       };
+
+      // Reset item_name if it was empty or a default name from any preset category
+      const isDefaultOrEmpty =
+        !existing.item_name ||
+        PRESET_CATEGORIES.some(
+          (p) => p.defaultItemName === existing.item_name || p.code === existing.item_name
+        );
+      const nextItemName = isDefaultOrEmpty
+        ? preset?.defaultItemName || itemCode
+        : existing.item_name;
+
       return {
         ...prev,
         [blockName]: {
           ...existing,
           item_code: itemCode,
-          item_name: existing.item_name || preset?.defaultItemName || itemCode,
+          item_name: nextItemName,
         },
       };
     });

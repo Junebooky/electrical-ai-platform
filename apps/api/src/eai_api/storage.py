@@ -9,10 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from cad_engine.schema import NormalizedDrawing
+from cad_engine.schema import NormalizedDrawing, WarningCode
 from cad_engine.takeoff import BlockMapping, Disposition, aggregate
 
 from .models import (
+    DrawingSummary,
     EvidenceReviewItem,
     InclusionStatus,
     ItemMappingRule,
@@ -122,6 +123,24 @@ class Storage:
             self._save_json(d_dir / "manual_objects.json", [])
 
         return d_dir
+
+    def list_drawings(self, project_id: str) -> list[DrawingSummary]:
+        d_root = self.projects_dir / project_id / "drawings"
+        if not d_root.exists():
+            return []
+        drawings: list[DrawingSummary] = []
+        for d_dir in d_root.iterdir():
+            if not d_dir.is_dir():
+                continue
+            meta_file = d_dir / "meta.json"
+            if meta_file.exists():
+                try:
+                    data = json.loads(meta_file.read_text(encoding="utf-8"))
+                    drawings.append(DrawingSummary(**data))
+                except Exception:
+                    pass
+        drawings.sort(key=lambda d: d.created_at, reverse=True)
+        return drawings
 
     def get_drawing(self, project_id: str, drawing_id: str) -> NormalizedDrawing | None:
         d_file = self.projects_dir / project_id / "drawings" / drawing_id / "drawing.json"
@@ -255,15 +274,36 @@ def build_takeoff_result(
             rev_status = ReviewStatus.UNREVIEWED
             reason = "미매핑 블록"
 
+        # Structural blocking check (AC-06): XREF, missing block definitions, or circular references
+        # MUST NEVER be forcefully included into verified CAD counts.
+        is_structurally_blocked = any(
+            code in obj.warnings
+            for code in (
+                WarningCode.XREF_UNRESOLVED,
+                WarningCode.MISSING_BLOCK_DEFINITION,
+                WarningCode.CIRCULAR_BLOCK_REFERENCE,
+            )
+        )
+
         # Apply User Review Override
         override = reviews.get(obj.id)
         if override:
-            inc_status = override.inclusion_status
-            rev_status = override.review_status
+            if is_structurally_blocked and override.inclusion_status == InclusionStatus.INCLUDED:
+                # Defend against false positive confirmation of structurally unverified CAD entities
+                inc_status = InclusionStatus.EXCLUDED
+                rev_status = ReviewStatus.UNRESOLVED
+                reason = "구조적 결함(외부참조/정의 누락) 객체는 CAD 자동 집계에 포함할 수 없습니다 (필요 시 수동 추가 사용)"
+            else:
+                inc_status = override.inclusion_status
+                rev_status = override.review_status
+                if override.reason:
+                    reason = override.reason
             if override.mapped_item_code:
                 base_item_code = override.mapped_item_code
-            if override.reason:
-                reason = override.reason
+        elif is_structurally_blocked:
+            inc_status = InclusionStatus.EXCLUDED
+            rev_status = ReviewStatus.UNRESOLVED
+            reason = "외부참조(XREF) 또는 블록 정의 누락으로 집계 불가"
 
         # Coordinates
         x = obj.insert_point[0] if obj.insert_point else 0.0

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import {
   NormalizedDrawing,
@@ -9,6 +9,7 @@ import {
   TakeoffResult,
   SourceObject,
   TakeoffEvidenceRow,
+  DrawingSummary,
 } from "@/types/cad";
 import { CadViewer } from "@/components/CadViewer";
 import { MappingPanel } from "@/components/MappingPanel";
@@ -25,11 +26,13 @@ import {
   AlertCircle,
   TableProperties,
   Tags,
+  FileText,
 } from "lucide-react";
 
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<ProjectMetadata[]>([]);
   const [currentProject, setCurrentProject] = useState<ProjectMetadata | null>(null);
+  const [drawings, setDrawings] = useState<DrawingSummary[]>([]);
   const [currentDrawing, setCurrentDrawing] = useState<NormalizedDrawing | null>(null);
   const [mappings, setMappings] = useState<ItemMappingRule[]>([]);
   const [takeoff, setTakeoff] = useState<TakeoffResult | null>(null);
@@ -48,35 +51,86 @@ export default function WorkspacePage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize: load or create default project
-  useEffect(() => {
-    async function init() {
-      try {
-        const list = await api.listProjects();
-        setProjects(list);
-        if (list.length > 0) {
-          setCurrentProject(list[0]);
-        } else {
-          const created = await api.createProject("기본 전기공사 프로젝트");
-          setProjects([created]);
-          setCurrentProject(created);
-        }
-      } catch (err: unknown) {
-        console.error("Failed to load projects", err);
-      }
-    }
-    init();
-  }, []);
-
   // When a drawing is loaded or mappings change, refresh takeoff
-  const refreshTakeoff = async (projectId: string, drawingId: string) => {
+  const refreshTakeoff = useCallback(async (projectId: string, drawingId: string) => {
     try {
       const res = await api.getTakeoff(projectId, drawingId);
       setTakeoff(res);
     } catch (err) {
       console.error("Failed to refresh takeoff", err);
     }
-  };
+  }, []);
+
+  // Load a specific drawing by ID
+  const loadDrawing = useCallback(
+    async (projectId: string, drawingId: string) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const [drawingData, mappingRules] = await Promise.all([
+          api.getDrawing(projectId, drawingId),
+          api.getMappings(projectId, drawingId),
+        ]);
+        setCurrentDrawing(drawingData);
+        setMappings(mappingRules);
+        await refreshTakeoff(projectId, drawingId);
+        setSelectedObjectId(null);
+        setHighlightedItemCode(null);
+        setHiddenLayers(new Set());
+      } catch (err: unknown) {
+        if (err instanceof ApiError) {
+          setErrorMessage(err.message);
+        } else if (err instanceof Error) {
+          setErrorMessage(err.message);
+        } else {
+          setErrorMessage("도면을 불러오는 중 오류가 발생했습니다.");
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [refreshTakeoff]
+  );
+
+  // Refresh drawings list for project and optionally auto-select a drawing
+  const refreshDrawings = useCallback(
+    async (projectId: string, selectDrawingId?: string) => {
+      try {
+        const dList = await api.listDrawings(projectId);
+        setDrawings(dList);
+        if (selectDrawingId) {
+          await loadDrawing(projectId, selectDrawingId);
+        } else if (dList.length > 0) {
+          await loadDrawing(projectId, dList[0].id);
+        }
+      } catch (err) {
+        console.error("Failed to load drawings list", err);
+      }
+    },
+    [loadDrawing]
+  );
+
+  // Initialize: load or create default project and load existing drawings
+  useEffect(() => {
+    async function init() {
+      try {
+        const list = await api.listProjects();
+        setProjects(list);
+        let activeProj: ProjectMetadata;
+        if (list.length > 0) {
+          activeProj = list[0];
+        } else {
+          activeProj = await api.createProject("기본 전기공사 프로젝트");
+          setProjects([activeProj]);
+        }
+        setCurrentProject(activeProj);
+        await refreshDrawings(activeProj.id);
+      } catch (err: unknown) {
+        console.error("Failed to load projects", err);
+      }
+    }
+    init();
+  }, [refreshDrawings]);
 
   // Upload DXF handler
   const handleFileUpload = async (file: File) => {
@@ -85,17 +139,7 @@ export default function WorkspacePage() {
     setErrorMessage(null);
     try {
       const uploadRes = await api.uploadDrawing(currentProject.id, file);
-      const drawingData = await api.getDrawing(currentProject.id, uploadRes.drawing_id);
-      setCurrentDrawing(drawingData);
-
-      // Load mappings
-      const mappingRules = await api.getMappings(currentProject.id, uploadRes.drawing_id);
-      setMappings(mappingRules);
-
-      // Calculate initial takeoff
-      await refreshTakeoff(currentProject.id, uploadRes.drawing_id);
-      setSelectedObjectId(null);
-      setHighlightedItemCode(null);
+      await refreshDrawings(currentProject.id, uploadRes.drawing_id);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         setErrorMessage(err.message);
@@ -232,18 +276,42 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        {/* Center / Drawing Info */}
-        {currentDrawing && (
-          <div className="hidden md:flex items-center gap-4 text-xs font-mono text-slate-300 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-sky-400 font-semibold">{currentDrawing.source.filename}</span>
-            <span className="text-slate-600">|</span>
-            <span>단위: {currentDrawing.dxf.units_name}</span>
-            <span className="text-slate-600">|</span>
-            <span>객체: {currentDrawing.objects.length}</span>
-            <span className="text-slate-600">|</span>
-            <span>프리미티브: {currentDrawing.primitives.length}</span>
-          </div>
-        )}
+        {/* Center / Drawing Info & Reopen Selector */}
+        <div className="flex items-center gap-3">
+          {drawings.length > 0 && (
+            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 text-xs">
+              <FileText size={14} className="text-sky-400 shrink-0" />
+              <select
+                aria-label="저장된 도면 목록"
+                value={currentDrawing?.drawing_id || ""}
+                onChange={(e) => {
+                  if (e.target.value && currentProject) {
+                    loadDrawing(currentProject.id, e.target.value);
+                  }
+                }}
+                className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer max-w-[200px] truncate"
+              >
+                {drawings.map((d) => (
+                  <option key={d.id} value={d.id} className="bg-slate-900 text-slate-200">
+                    {d.filename} ({d.revision})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {currentDrawing && (
+            <div className="hidden lg:flex items-center gap-3 text-xs font-mono text-slate-300 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+              <span className="text-sky-400 font-semibold">{currentDrawing.source.filename}</span>
+              <span className="text-slate-600">|</span>
+              <span>단위: {currentDrawing.dxf.units_name}</span>
+              <span className="text-slate-600">|</span>
+              <span>객체: {currentDrawing.objects.length}</span>
+              <span className="text-slate-600">|</span>
+              <span>프리미티브: {currentDrawing.primitives.length}</span>
+            </div>
+          )}
+        </div>
 
         {/* Actions */}
         <div className="flex items-center gap-2">
@@ -395,6 +463,7 @@ export default function WorkspacePage() {
 
                 {activeRightTab === "mapping" && (
                   <MappingPanel
+                    key={currentDrawing.drawing_id}
                     blocks={currentDrawing.blocks}
                     mappings={mappings}
                     onSaveMappings={handleSaveMappings}

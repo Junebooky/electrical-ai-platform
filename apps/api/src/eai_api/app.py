@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import urllib.parse
 from typing import Any, Literal
 
@@ -13,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .exporter import export_csv_evidence, export_csv_summary, export_xlsx
 from .models import (
+    DrawingSummary,
     EvidenceReviewItem,
     ItemMappingRule,
     ManualObjectItem,
@@ -28,9 +30,15 @@ app = FastAPI(
     version="0.1.0",
 )
 
+allowed_origins_env = os.getenv(
+    "EAI_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000",
+)
+allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -111,6 +119,14 @@ async def upload_drawing(
         "objects_count": len(drawing.objects),
         "warnings_count": len(drawing.warnings),
     }
+
+
+@app.get("/api/projects/{project_id}/drawings", response_model=list[DrawingSummary])
+def list_drawings(project_id: str) -> list[DrawingSummary]:
+    proj = storage.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    return storage.list_drawings(project_id)
 
 
 @app.get("/api/projects/{project_id}/drawings/{drawing_id}")
