@@ -91,6 +91,7 @@ class Storage:
         project_id: str,
         drawing: NormalizedDrawing,
         revision: str = "REV0",
+        raw_bytes: bytes | None = None,
     ) -> Path:
         d_dir = self.projects_dir / project_id / "drawings" / drawing.drawing_id
         d_dir.mkdir(parents=True, exist_ok=True)
@@ -99,12 +100,22 @@ class Storage:
         drawing_file = d_dir / "drawing.json"
         self._save_json(drawing_file, drawing.model_dump(mode="json"))
 
-        # 2. save metadata
+        # 2. save raw DXF bytes if provided (FR-002, QA-DEF-01)
+        raw_saved = False
+        if raw_bytes is not None:
+            raw_file = d_dir / "raw.dxf"
+            raw_file.write_bytes(raw_bytes)
+            raw_saved = True
+
+        # 3. save metadata
         meta = {
             "id": drawing.drawing_id,
             "project_id": project_id,
             "filename": drawing.source.filename,
             "file_hash": drawing.source.sha256,
+            "file_size_bytes": len(raw_bytes) if raw_bytes is not None else drawing.source.size_bytes,
+            "raw_file_saved": raw_saved,
+            "raw_filename": "raw.dxf" if raw_saved else None,
             "revision": revision,
             "units_name": drawing.dxf.units_name,
             "insunits": drawing.dxf.insunits,
@@ -114,7 +125,7 @@ class Storage:
         }
         self._save_json(d_dir / "meta.json", meta)
 
-        # 3. default mappings / reviews / manual objects if not present
+        # 4. default mappings / reviews / manual objects if not present
         if not (d_dir / "mappings.json").exists():
             self._save_json(d_dir / "mappings.json", [])
         if not (d_dir / "reviews.json").exists():
@@ -123,6 +134,12 @@ class Storage:
             self._save_json(d_dir / "manual_objects.json", [])
 
         return d_dir
+
+    def get_raw_drawing_path(self, project_id: str, drawing_id: str) -> Path | None:
+        raw_file = self.projects_dir / project_id / "drawings" / drawing_id / "raw.dxf"
+        if raw_file.exists():
+            return raw_file
+        return None
 
     def list_drawings(self, project_id: str) -> list[DrawingSummary]:
         d_root = self.projects_dir / project_id / "drawings"
@@ -430,6 +447,15 @@ def build_takeoff_result(
 
     summary_rows.sort(key=lambda s: s.item_code)
 
+    unresolved_count = sum(
+        1
+        for e in evidence_rows
+        if e.review_status == ReviewStatus.UNRESOLVED or e.mapped_item_code == "UNMAPPED"
+    )
+    is_provisional = (unresolved_count > 0) or any(
+        s.review_status != ReviewStatus.REVIEWED for s in summary_rows
+    )
+
     return TakeoffResult(
         drawing_id=drawing.drawing_id,
         drawing_name=drawing_name,
@@ -437,4 +463,7 @@ def build_takeoff_result(
         summary=summary_rows,
         evidence=evidence_rows,
         warnings_count=len(drawing.warnings),
+        exported_at=datetime.now(UTC),
+        is_provisional=is_provisional,
+        unresolved_count=unresolved_count,
     )

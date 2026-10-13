@@ -16,6 +16,7 @@ import { MappingPanel } from "@/components/MappingPanel";
 import { TakeoffTable } from "@/components/TakeoffTable";
 import { ReviewDrawer } from "@/components/ReviewDrawer";
 import { WarningBanner } from "@/components/WarningBanner";
+import { ManualAddModal } from "@/components/ManualAddModal";
 import {
   Upload,
   Layers,
@@ -44,33 +45,44 @@ export default function WorkspacePage() {
   const [hiddenLayers, setHiddenLayers] = useState<Set<string>>(new Set());
   const [isAddManualMode, setIsAddManualMode] = useState(false);
 
-  // Async state
+  // Async state & race defense (QA-DEF-04)
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [pendingManualCoord, setPendingManualCoord] = useState<{ x: number; y: number } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const requestSeqRef = useRef<number>(0);
+  const activeDrawingIdRef = useRef<string | null>(null);
 
   // When a drawing is loaded or mappings change, refresh takeoff
   const refreshTakeoff = useCallback(async (projectId: string, drawingId: string) => {
     try {
       const res = await api.getTakeoff(projectId, drawingId);
+      if (activeDrawingIdRef.current !== drawingId) {
+        return; // Stale request, discard
+      }
       setTakeoff(res);
     } catch (err) {
       console.error("Failed to refresh takeoff", err);
     }
   }, []);
 
-  // Load a specific drawing by ID
+  // Load a specific drawing by ID with async race defense
   const loadDrawing = useCallback(
     async (projectId: string, drawingId: string) => {
       setIsLoading(true);
       setErrorMessage(null);
+      const seq = ++requestSeqRef.current;
+      activeDrawingIdRef.current = drawingId;
       try {
         const [drawingData, mappingRules] = await Promise.all([
           api.getDrawing(projectId, drawingId),
           api.getMappings(projectId, drawingId),
         ]);
+        if (requestSeqRef.current !== seq || activeDrawingIdRef.current !== drawingId) {
+          return; // Newer request already initiated, discard stale response
+        }
         setCurrentDrawing(drawingData);
         setMappings(mappingRules);
         await refreshTakeoff(projectId, drawingId);
@@ -78,6 +90,9 @@ export default function WorkspacePage() {
         setHighlightedItemCode(null);
         setHiddenLayers(new Set());
       } catch (err: unknown) {
+        if (requestSeqRef.current !== seq || activeDrawingIdRef.current !== drawingId) {
+          return;
+        }
         if (err instanceof ApiError) {
           setErrorMessage(err.message);
         } else if (err instanceof Error) {
@@ -86,7 +101,9 @@ export default function WorkspacePage() {
           setErrorMessage("도면을 불러오는 중 오류가 발생했습니다.");
         }
       } finally {
-        setIsLoading(false);
+        if (requestSeqRef.current === seq) {
+          setIsLoading(false);
+        }
       }
     },
     [refreshTakeoff]
@@ -196,26 +213,50 @@ export default function WorkspacePage() {
     }
   };
 
-  // Add Manual Object (on canvas click)
-  const handleAddManualPoint = async (x: number, y: number) => {
-    if (!currentProject || !currentDrawing) return;
-    const itemCode = highlightedItemCode || "LIGHT";
+  // Available items for manual addition derived from mappings or defaults
+  const availableItems = useMemo(() => {
+    const list: { code: string; name: string }[] = [];
+    const seen = new Set<string>();
+    for (const m of mappings) {
+      if (m.item_code && m.item_code !== "EXCLUDE" && !seen.has(m.item_code)) {
+        seen.add(m.item_code);
+        list.push({ code: m.item_code, name: m.item_name || m.item_code });
+      }
+    }
+    if (!seen.has("LIGHT")) list.push({ code: "LIGHT", name: "전등 (다운라이트/평판등)" });
+    if (!seen.has("OUTLET")) list.push({ code: "OUTLET", name: "전열 (매입 콘센트)" });
+    if (!seen.has("SWITCH")) list.push({ code: "SWITCH", name: "스위치 (텀블러 스위치)" });
+    return list;
+  }, [mappings]);
+
+  // Open Manual Object Dialog (DEC-011 / DEC-012)
+  const handleAddManualPoint = (x: number, y: number) => {
+    setPendingManualCoord({ x, y });
+  };
+
+  // Confirm manual object addition after mandatory item & reason selection
+  const handleConfirmManualAdd = async (itemCode: string, reason: string, note: string) => {
+    if (!currentProject || !currentDrawing || !pendingManualCoord) return;
+    setIsSaving(true);
     try {
       const manualId = `manual_${Date.now()}`;
       await api.addManualObject(currentProject.id, currentDrawing.drawing_id, {
         id: manualId,
         drawing_id: currentDrawing.drawing_id,
-        x: Math.round(x * 100) / 100,
-        y: Math.round(y * 100) / 100,
+        x: pendingManualCoord.x,
+        y: pendingManualCoord.y,
         item_code: itemCode,
-        item_name: "수동 추가 기구",
+        item_name: availableItems.find((i) => i.code === itemCode)?.name || itemCode,
         unit: "EA",
-        note: "도면상 누락 기구 현장 확인 추가",
+        note: note ? `[${reason}] ${note}` : `[${reason}] 수동 추가`,
       });
+      setPendingManualCoord(null);
       setIsAddManualMode(false);
       await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
     } catch (err: unknown) {
       setErrorMessage("수동 기구 추가 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -425,6 +466,17 @@ export default function WorkspacePage() {
                 onDeleteManualObject={handleDeleteManualObject}
                 onClose={() => setSelectedObjectId(null)}
                 isSaving={isSaving}
+              />
+
+              {/* Explicit Manual Add Modal (DEC-011 / DEC-012) */}
+              <ManualAddModal
+                isOpen={Boolean(pendingManualCoord)}
+                coords={pendingManualCoord}
+                drawingName={currentDrawing.source.filename}
+                availableItems={availableItems}
+                isSaving={isSaving}
+                onClose={() => setPendingManualCoord(null)}
+                onConfirm={handleConfirmManualAdd}
               />
             </div>
 

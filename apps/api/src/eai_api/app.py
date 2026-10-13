@@ -65,12 +65,32 @@ def health_check() -> dict[str, str]:
     return {"status": "ok", "version": "0.1.0"}
 
 
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MiB (FR-002, QA-DEF-02)
+CHUNK_SIZE = 64 * 1024  # 64 KiB chunks
+
+
+async def read_upload_file_bounded(file: UploadFile, max_bytes: int = MAX_UPLOAD_SIZE) -> bytes:
+    """Read upload file stream in chunks, aborting immediately if exceeding max_bytes."""
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"파일 크기가 허용 한도({max_bytes // (1024 * 1024)} MiB)를 초과했습니다.",
+            )
+    return bytes(buffer)
+
+
 # ----------------------------------------------------------------- Direct parse
 @app.post("/api/dxf/parse-direct")
 async def parse_direct(file: UploadFile = File(...)) -> NormalizedDrawing:
     """Parse untrusted DXF directly and return normalized JSON without creating a project."""
     filename = file.filename or "drawing.dxf"
-    content = await file.read()
+    content = await read_upload_file_bounded(file)
     return parse_dxf(content, filename=filename)
 
 
@@ -105,11 +125,11 @@ async def upload_drawing(
         raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
 
     filename = file.filename or "drawing.dxf"
-    content = await file.read()
+    content = await read_upload_file_bounded(file)
 
     # Deterministic normalization
     drawing = parse_dxf(content, filename=filename)
-    storage.save_drawing(project_id, drawing, revision=revision)
+    storage.save_drawing(project_id, drawing, revision=revision, raw_bytes=content)
 
     return {
         "project_id": project_id,
@@ -118,6 +138,8 @@ async def upload_drawing(
         "revision": revision,
         "objects_count": len(drawing.objects),
         "warnings_count": len(drawing.warnings),
+        "raw_saved": True,
+        "file_size_bytes": len(content),
     }
 
 
@@ -135,6 +157,23 @@ def get_drawing(project_id: str, drawing_id: str) -> NormalizedDrawing:
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
     return drawing
+
+
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/raw")
+def get_raw_drawing(project_id: str, drawing_id: str) -> Response:
+    raw_path = storage.get_raw_drawing_path(project_id, drawing_id)
+    if not raw_path or not raw_path.exists():
+        raise HTTPException(status_code=404, detail="원본 DXF 파일을 찾을 수 없습니다.")
+    meta = storage.get_drawing_meta(project_id, drawing_id)
+    filename = (meta.get("filename") if meta else None) or "drawing.dxf"
+    encoded_filename = urllib.parse.quote(filename)
+    return Response(
+        content=raw_path.read_bytes(),
+        media_type="application/dxf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
+    )
 
 
 # --------------------------------------------------------------------- Mappings

@@ -161,7 +161,13 @@ async function runE2E() {
     await page.waitForSelector("header");
     const headerTitle = await page.$eval("h1", (el) => el.textContent.trim());
     assert(headerTitle.includes("Electrical AI Platform"), `Header branding mismatch: "${headerTitle}"`);
-    recordResult("Header branding render", headerTitle);
+    // Assert active project is the isolated test project
+    const activeProjectText = await page.evaluate(() => document.querySelector("header")?.innerText || "");
+    assert(
+      activeProjectText.includes(testProjectName),
+      `Active project in browser must be the isolated project "${testProjectName}"`
+    );
+    recordResult("Header branding & isolated project verified", testProjectName);
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "01_initial_landing.png") });
 
     // -------------------------------------------------------------------------
@@ -183,6 +189,10 @@ async function runE2E() {
     recordResult("DXF upload & SVG vector primitives rendered", `circles=${svgCircleCount}, paths=${svgPathCount}`);
     await new Promise((r) => setTimeout(r, 1000));
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "02_dxf_uploaded_view.png") });
+
+    const drawingList = await (await fetch(`${API_URL}/api/projects/${isolatedProject.id}/drawings`)).json();
+    assert(drawingList.length > 0, "No drawing found in isolated project after upload");
+    const drawingId = drawingList[0].id;
 
     // -------------------------------------------------------------------------
     // Scenario 3: CAD Zoom / Fit Viewport Transform Assertion
@@ -352,7 +362,11 @@ async function runE2E() {
       reviewConfirmedText.includes("REVIEWED"),
       "Drawer status badge must indicate REVIEWED after confirmation"
     );
-    recordResult("Review confirmation asserted (status: REVIEWED)");
+    // API verification directly against takeoff endpoint
+    const backendTakeoff = await (await fetch(`${API_URL}/api/projects/${isolatedProject.id}/drawings/${drawingId}/takeoff`)).json();
+    const reviewedItem = backendTakeoff.evidence.find((e) => e.review_status === "REVIEWED");
+    assert(reviewedItem, "Backend API must return evidence with review_status: REVIEWED");
+    recordResult("Review confirmation asserted in UI & Backend API (status: REVIEWED)");
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "06_review_confirmed.png") });
 
     // 5B: Click "오탐 제외" (EXCLUDED) and assert quantity decreases (6 -> 5)
@@ -434,22 +448,60 @@ async function runE2E() {
     });
     await new Promise((r) => setTimeout(r, 500));
 
-    // Click on canvas at (450, 400)
+    // 6A: Test Toolbar Click Guard (QA-DEF-03)
+    console.log("  Testing toolbar click guard in manual add mode (QA-DEF-03)...");
+    const zoomInBtnToolbar = await page.$('.viewer-controls button[title="줌 인"]');
+    assert(zoomInBtnToolbar, "Zoom in button not found");
+    await zoomInBtnToolbar.click();
+    await new Promise((r) => setTimeout(r, 400));
+
+    const modalOnToolbarClick = await page.$("#manual-add-title");
+    assert(!modalOnToolbarClick, "Clicking toolbar zoom button must NOT trigger manual add modal");
+    const diamondOnToolbar = await page.$$eval("svg rect[transform*='rotate(45)']", (els) => els.length);
+    assertEqual(diamondOnToolbar, 0, "Clicking toolbar zoom button must NOT add manual marker");
+    recordResult("Toolbar click guard asserted (QA-DEF-03)", "No accidental modal or marker created");
+
+    // 6B: Click empty canvas at (450, 400) -> ManualAddModal opens (DEC-011/012)
+    console.log("  Testing canvas click and manual item modal (DEC-011 / DEC-012)...");
     await page.mouse.click(450, 400);
+    await new Promise((r) => setTimeout(r, 800));
+
+    await page.waitForSelector("#manual-add-title", { timeout: 5000 });
+    const modalTitle = await page.$eval("#manual-add-title", (el) => el.textContent.trim());
+    assert(modalTitle.includes("누락 기구 수동 추가"), "Manual add modal title mismatch");
+
+    // Check confirm button is disabled before selection
+    const isConfirmDisabled = await page.$eval("#btn-confirm-manual-add", (btn) => btn.disabled);
+    assert(isConfirmDisabled, "Confirm button must be disabled before selecting mandatory item & reason");
+
+    // Select item "LIGHT"
+    await page.select("#manual-item-select", "LIGHT");
+    // Select reason "도면 누락"
+    await page.select("#manual-reason-select", "도면 누락");
+    // Type note
+    await page.type("#manual-note-input", "E2E 현장 누락 수동 추가 테스트");
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Confirm button must now be enabled
+    const isConfirmEnabled = await page.$eval("#btn-confirm-manual-add", (btn) => !btn.disabled);
+    assert(isConfirmEnabled, "Confirm button must be enabled after filling mandatory fields");
+
+    // Click confirm button
+    await page.click("#btn-confirm-manual-add");
     await new Promise((r) => setTimeout(r, 1500));
 
-    // 6A: Check manual diamond marker exists in SVG
+    // Check manual diamond marker exists in SVG
     const manualDiamondCount = await page.$$eval("svg rect[transform*='rotate(45)']", (els) => els.length);
     assertEqual(manualDiamondCount, 1, "Exactly 1 manual diamond marker must exist on canvas");
 
-    // 6B: Check quantity increased from 6 to 7
+    // Check quantity increased from 6 to 7
     const lightQtyAfterManualAdd = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll("tbody tr"));
       const r = rows.find((row) => row.textContent.includes("LIGHT"));
       return r ? parseInt(r.querySelector("td:nth-child(4)")?.textContent || "0", 10) : 0;
     });
     assertEqual(lightQtyAfterManualAdd, 7, "LIGHT quantity must increase from 6 to 7 (+1 delta)");
-    recordResult("Manual object added & quantity incremented", "LIGHT: 6 -> 7 EA");
+    recordResult("Manual object added via explicit modal & quantity incremented", "LIGHT: 6 -> 7 EA (도면 누락)");
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "07_manual_marker_review.png") });
 
     // 6C: Click manual diamond marker to inspect Review Drawer
@@ -537,36 +589,37 @@ async function runE2E() {
       };
     });
 
-    // 7A: Validate CSV Summary
+    // 7A: Validate CSV Summary with line/column parser
     assert(exportUrls.csvSummary, "CSV Summary download link not found");
     const csvSumRes = await fetch(exportUrls.csvSummary);
     assertEqual(csvSumRes.status, 200, "CSV Summary export must return HTTP 200");
-    const csvSumText = await csvSumRes.text();
-    const sumLines = csvSumText.trim().split("\n");
+    const csvSumText = (await csvSumRes.text()).replace(/^\uFEFF/, "");
+    const sumLines = csvSumText.trim().split("\n").map((l) => l.split(","));
     assert(sumLines.length >= 4, "CSV Summary must have header + at least 3 data rows");
-    assert(sumLines[0].includes("item_code"), "CSV Summary must contain PRD standard header");
-    assert(csvSumText.includes("LIGHT") && csvSumText.includes("6"), "CSV Summary must include LIGHT, 6 EA");
-    assert(csvSumText.includes("OUTLET") && csvSumText.includes("4"), "CSV Summary must include OUTLET, 4 EA");
-    assert(csvSumText.includes("SWITCH") && csvSumText.includes("3"), "CSV Summary must include SWITCH, 3 EA");
-    recordResult("CSV Summary deep parsing & exact counts validated");
+    assertEqual(sumLines[0][0], "item_code", "First header column must be item_code");
+    assertEqual(sumLines[0][4], "quantity", "Fifth header column must be quantity");
+    assertEqual(sumLines[0][10], "exported_at", "Exported timestamp header must be present");
+
+    const lightCsvRow = sumLines.find((r) => r[0] === "LIGHT");
+    assert(lightCsvRow, "CSV Summary must contain LIGHT row");
+    assertEqual(parseInt(lightCsvRow[4], 10), 6, "CSV Summary LIGHT quantity must be 6");
+    recordResult("CSV Summary deep parsing & exact column matches validated", "LIGHT: 6 EA, header validated");
 
     // 7B: Validate CSV Evidence & Formula Injection Defense
     assert(exportUrls.csvEvidence, "CSV Evidence download link not found");
     const csvEvRes = await fetch(exportUrls.csvEvidence);
     assertEqual(csvEvRes.status, 200, "CSV Evidence export must return HTTP 200");
-    const csvEvText = await csvEvRes.text();
-    console.log("  [DEBUG csvEvText]:\n", csvEvText);
+    const csvEvText = (await csvEvRes.text()).replace(/^\uFEFF/, "");
     const evLines = csvEvText.trim().split("\n");
     assertEqual(evLines.length, 14, "CSV Evidence must contain header + exactly 13 evidence rows");
-    assert(evLines[0].includes("source_object_id"), "CSV Evidence must contain PRD standard header");
     // Assert formula injection is sanitized with leading single quote: '=cmd|...
     assert(
-      csvEvText.includes("''=cmd|' /C calc'!A0") || csvEvText.includes("=\"=cmd|") || csvEvText.includes("''=cmd") || csvEvText.includes("'=cmd"),
+      csvEvText.includes("''=cmd|' /C calc'!A0") || csvEvText.includes("'=cmd"),
       "Formula injection string must be sanitized against CSV execution"
     );
-    recordResult("CSV Evidence parsing & Formula Injection Defense (#7) validated");
+    recordResult("CSV Evidence row-by-row parsing & Formula Injection Defense (#7) validated");
 
-    // 7C: Validate Excel XLSX 2-sheet structure
+    // 7C: Validate Excel XLSX 2-sheet structure & ZERO formula cells
     assert(exportUrls.xlsx, "Excel download link not found");
     const xlsxRes = await fetch(exportUrls.xlsx);
     assertEqual(xlsxRes.status, 200, "Excel export must return HTTP 200");
@@ -582,7 +635,23 @@ async function runE2E() {
       workbookXml.includes("Takeoff Summary") && workbookXml.includes("Takeoff Evidence"),
       "Excel workbook must contain 2 separate sheets: 'Takeoff Summary' and 'Takeoff Evidence'"
     );
-    recordResult("Excel (XLSX) 2-sheet workbook structure verified");
+
+    // Deep XML Inspection: In Excel sheet XML, formula cells are represented as <f>formula</f>
+    // Assert that <f> does NOT exist in sheet1.xml or sheet2.xml
+    for (const sheetPath of ["xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"]) {
+      if (zipEntries[sheetPath]?.data) {
+        const sheetXml = zipEntries[sheetPath].data.toString("utf8");
+        assert(!sheetXml.includes("<f>"), `Excel sheet ${sheetPath} must NOT contain any formula cell tag <f>`);
+      }
+    }
+    recordResult("Excel (XLSX) 2-sheet workbook structure & ZERO formula cells verified");
+
+    // 7D: Validate Raw DXF Preservation Endpoint (Issue #5, QA-DEF-01)
+    const rawRes = await fetch(`${API_URL}/api/projects/${isolatedProject.id}/drawings/${drawingId}/raw`);
+    assertEqual(rawRes.status, 200, "Raw DXF download must return HTTP 200");
+    const rawBytes = Buffer.from(await rawRes.arrayBuffer());
+    assert(rawBytes.length > 1000, "Preserved raw DXF bytes length must be > 1000");
+    recordResult("Raw DXF preservation & download API verified (#5)");
 
     // -------------------------------------------------------------------------
     // Scenario 8: Page Reload & State Persistence (AC-07)

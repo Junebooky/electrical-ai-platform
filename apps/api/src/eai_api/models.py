@@ -96,6 +96,9 @@ class TakeoffResult(BaseModel):
     summary: list[TakeoffSummaryRow]
     evidence: list[TakeoffEvidenceRow]
     warnings_count: int
+    exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    is_provisional: bool = False
+    unresolved_count: int = 0
 
 
 class ProjectCreate(BaseModel):

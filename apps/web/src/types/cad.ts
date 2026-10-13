@@ -186,6 +186,9 @@ export interface TakeoffResult {
   summary: TakeoffSummaryRow[];
   evidence: TakeoffEvidenceRow[];
   warnings_count: number;
+  exported_at?: string;
+  is_provisional?: boolean;
+  unresolved_count?: number;
 }
 
 export interface ProjectMetadata {

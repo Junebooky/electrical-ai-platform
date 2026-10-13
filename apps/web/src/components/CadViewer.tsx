@@ -106,14 +106,15 @@ export function CadViewer({
     setPan({ x: newPanX, y: newPanY });
   };
 
+  const dragStartPos = useRef<{ clientX: number; clientY: number } | null>(null);
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 0) {
-      if (isAddManualMode) {
-        if (onAddManualPoint) {
-          onAddManualPoint(mouseWorld.x, mouseWorld.y);
-        }
+      const target = e.target as HTMLElement | SVGElement | null;
+      if (target?.closest("button, .viewer-controls, [data-interactive='true']")) {
         return;
       }
+      dragStartPos.current = { clientX: e.clientX, clientY: e.clientY };
       setIsDragging(true);
       setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     }
@@ -138,8 +139,29 @@ export function CadViewer({
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (dragStartPos.current) {
+      const dist = Math.hypot(
+        e.clientX - dragStartPos.current.clientX,
+        e.clientY - dragStartPos.current.clientY
+      );
+      // Pure click (distance < 6px) in manual add mode (FR-005, QA-DEF-03)
+      if (isAddManualMode && dist < 6 && onAddManualPoint && containerRef.current) {
+        const target = e.target as HTMLElement | SVGElement | null;
+        const isToolbar = Boolean(target?.closest("button, .viewer-controls, [data-interactive='true']"));
+        const isMarker = Boolean(target?.closest("g.cursor-pointer, .interactive-marker"));
+        if (!isToolbar && !isMarker) {
+          const rect = containerRef.current.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          const wx = (mouseX - pan.x) / scale;
+          const wy = (pan.y - mouseY) / scale;
+          onAddManualPoint(Math.round(wx * 100) / 100, Math.round(wy * 100) / 100);
+        }
+      }
+    }
     setIsDragging(false);
+    dragStartPos.current = null;
   };
 
   const highlightedSet = useMemo(() => new Set(highlightedObjectIds), [highlightedObjectIds]);
@@ -169,23 +191,35 @@ export function CadViewer({
       onMouseLeave={handleMouseUp}
     >
       {/* CAD Floating Toolbar */}
-      <div className="absolute top-4 left-4 z-20 flex items-center gap-1.5 p-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg shadow-xl text-slate-300">
+      <div className="viewer-controls absolute top-4 left-4 z-20 flex items-center gap-1.5 p-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg shadow-xl text-slate-300">
         <button
-          onClick={() => setScale((s) => s * 1.3)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setScale((s) => s * 1.3);
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
           className="p-1.5 hover:bg-slate-800 hover:text-white rounded transition"
           title="줌 인"
         >
           <ZoomIn size={18} />
         </button>
         <button
-          onClick={() => setScale((s) => s / 1.3)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setScale((s) => s / 1.3);
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
           className="p-1.5 hover:bg-slate-800 hover:text-white rounded transition"
           title="줌 아웃"
         >
           <ZoomOut size={18} />
         </button>
         <button
-          onClick={fitToScreen}
+          onClick={(e) => {
+            e.stopPropagation();
+            fitToScreen();
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
           className="p-1.5 hover:bg-slate-800 hover:text-white rounded transition"
           title="화면 맞춤"
         >
@@ -296,7 +330,8 @@ export function CadViewer({
               <g
                 key={obj.id}
                 transform={`translate(${ix}, ${-iy})`}
-                className="pointer-events-auto cursor-pointer"
+                className="pointer-events-auto cursor-pointer interactive-marker"
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelectObject(obj.id);
@@ -361,7 +396,8 @@ export function CadViewer({
               <g
                 key={m.id}
                 transform={`translate(${m.x}, ${-m.y})`}
-                className="pointer-events-auto cursor-pointer"
+                className="pointer-events-auto cursor-pointer interactive-marker"
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelectObject(m.id);

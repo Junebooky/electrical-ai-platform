@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 import io
 from pathlib import Path
 
@@ -457,30 +459,154 @@ def test_export_formula_injection_defense(client: TestClient) -> None:
         ],
     )
 
-    # 1. Check CSV Summary
+    # 1. Check CSV Summary parsed line-by-line via csv.reader
     csv_sum_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=summary")
     assert csv_sum_res.status_code == 200
-    csv_sum_text = csv_sum_res.text
-    # Must be sanitized with leading quote
-    assert "'=cmd|' /C calc'!A0" in csv_sum_text
-    assert "'@SUM(1,1)" in csv_sum_text
+    reader_sum = list(csv.reader(io.StringIO(csv_sum_res.content.decode("utf-8-sig"))))
+    assert len(reader_sum) >= 2
+    header_sum = reader_sum[0]
+    assert header_sum == [
+        "item_code",
+        "item_name",
+        "specification",
+        "unit",
+        "quantity",
+        "quantity_method",
+        "review_status",
+        "drawing_id",
+        "drawing_name",
+        "drawing_revision",
+        "exported_at",
+        "notes",
+    ]
+    # Check row 1 fields
+    row_sum = reader_sum[1]
+    assert row_sum[0].startswith("'=")
+    assert row_sum[1].startswith("'@")
+    assert row_sum[7] == drawing_id
+    assert row_sum[9] == "REV0"
 
-    # 2. Check CSV Evidence
+    # 2. Check CSV Evidence parsed line-by-line via csv.reader
     csv_ev_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=evidence")
     assert csv_ev_res.status_code == 200
-    csv_ev_text = csv_ev_res.text
-    assert "'+cmd|' /C calc'!A0" in csv_ev_text
+    reader_ev = list(csv.reader(io.StringIO(csv_ev_res.content.decode("utf-8-sig"))))
+    assert len(reader_ev) >= 2
+    header_ev = reader_ev[0]
+    assert header_ev == [
+        "source_object_id",
+        "drawing_id",
+        "parent_source_id",
+        "block_name",
+        "layer_name",
+        "entity_type",
+        "x",
+        "y",
+        "mapped_item_code",
+        "inclusion_status",
+        "review_status",
+        "review_reason",
+        "drawing_revision",
+        "exported_at",
+    ]
+    # First row reason must have leading quote escape
+    row_ev = reader_ev[1]
+    assert row_ev[11].startswith("'+")
 
-    # 3. Check Excel XLSX
+    # 3. Check Excel XLSX deep structure and cell.data_type != 'f'
     xlsx_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx")
     assert xlsx_res.status_code == 200
-    assert len(xlsx_res.content) > 1000
-    import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_res.content))
     assert "Takeoff Summary" in wb.sheetnames
     assert "Takeoff Evidence" in wb.sheetnames
+
+    for sheet_name in ("Takeoff Summary", "Takeoff Evidence"):
+        ws = wb[sheet_name]
+        for row_cells in ws.iter_rows():
+            for c in row_cells:
+                assert c.data_type != "f", f"Formula cell detected in {sheet_name} at {c.coordinate}: {c.value}"
+
     ws_sum = wb["Takeoff Summary"]
-    # Row 2, column 1 is item_code
     assert str(ws_sum.cell(row=2, column=1).value).startswith("'=")
     assert str(ws_sum.cell(row=2, column=2).value).startswith("'@")
+
+
+def test_raw_dxf_preservation_and_download(client: TestClient) -> None:
+    """Issue #5 / QA-DEF-01: Raw DXF bytes must be preserved and retrievable byte-for-byte."""
+    proj = client.post("/api/projects", json={"name": "원본 보존 검증 프로젝트"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    original_bytes = dxf_file.read_bytes()
+    expected_hash = hashlib.sha256(original_bytes).hexdigest()
+
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, original_bytes, "application/octet-stream")},
+    )
+    assert upload_res.status_code == 200
+    drawing_info = upload_res.json()
+    assert drawing_info["raw_saved"] is True
+    assert drawing_info["file_size_bytes"] == len(original_bytes)
+    drawing_id = drawing_info["drawing_id"]
+
+    # Download raw drawing via API
+    raw_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/raw")
+    assert raw_res.status_code == 200
+    assert raw_res.content == original_bytes
+    assert hashlib.sha256(raw_res.content).hexdigest() == expected_hash
+    assert "attachment" in raw_res.headers.get("content-disposition", "")
+
+
+def test_streaming_upload_boundary_and_413(client: TestClient) -> None:
+    """Issue #5 / QA-DEF-02: Bounded streaming upload must reject files > 50 MiB with HTTP 413."""
+    proj = client.post("/api/projects", json={"name": "용량 제한 검증"}).json()
+    project_id = proj["id"]
+
+    # 1. 0 bytes -> returns HTTP 400 (empty file rejected by loader)
+    zero_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": ("empty.dxf", b"", "application/octet-stream")},
+    )
+    assert zero_res.status_code == 400
+    assert zero_res.json()["code"] == "EMPTY_FILE"
+
+    # 2. 50 MiB + 1 byte -> returns HTTP 413 Payload Too Large
+    oversized_len = 50 * 1024 * 1024 + 1
+    # Use generator-like stream of dummy bytes to simulate oversized stream
+    oversized_data = b"0\nSECTION\n" + b" " * (oversized_len - 10)
+    over_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": ("huge.dxf", oversized_data, "application/octet-stream")},
+    )
+    assert over_res.status_code == 413
+    assert "50 MiB" in over_res.json()["detail"]
+
+
+def test_provisional_and_unresolved_contracts(client: TestClient) -> None:
+    """Issue #9 / DEC-010~014: Provisional quantity and unresolved items contract."""
+    proj = client.post("/api/projects", json={"name": "잠정 산출 검증"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # No mappings yet: all items are UNMAPPED -> must be provisional with unresolved_count > 0
+    t0 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    assert t0["is_provisional"] is True
+    assert t0["unresolved_count"] > 0
+
+    # Map LT-DL to LIGHT, but others unmapped
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[{"block_name": "LT-DL", "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"}],
+    )
+    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    # Still provisional because other blocks (OT-2P, SW-1, etc.) remain unmapped
+    assert t1["is_provisional"] is True
+    assert t1["unresolved_count"] > 0
+
 
