@@ -191,7 +191,10 @@ def save_mappings(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
-    storage.save_mappings(project_id, drawing_id, mappings)
+    try:
+        storage.save_mappings(project_id, drawing_id, mappings)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"status": "saved", "count": len(mappings)}
 
 
@@ -222,6 +225,19 @@ def add_manual_object(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    mappings = storage.get_mappings(project_id, drawing_id)
+    canon_defs = {m.item_code: m for m in mappings if m.item_code not in ("EXCLUDE", "UNMAPPED")}
+    if item.item_code in canon_defs:
+        expected_unit = (canon_defs[item.item_code].unit or "EA").strip()
+        actual_unit = (item.unit or "EA").strip()
+        if expected_unit != actual_unit:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"수동 추가 기구의 단위('{item.unit}')가 도면 매핑 정규 단위('{expected_unit}')와 "
+                    f"일치하지 않습니다 (ADR-005)."
+                ),
+            )
     objs = storage.get_manual_objects(project_id, drawing_id)
     objs.append(item)
     storage.save_manual_objects(project_id, drawing_id, objs)
@@ -268,10 +284,15 @@ def export_csv(
         filename = f"{result.drawing_name}_takeoff_evidence.csv"
 
     quoted = urllib.parse.quote(filename)
+    comp_header = "provisional" if result.is_provisional else "confirmed"
     return Response(
         content=data,
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "X-Takeoff-Completeness": comp_header,
+            "X-Takeoff-Unresolved-Count": str(result.unresolved_count),
+        },
     )
 
 
@@ -287,8 +308,13 @@ def export_excel(
     data = export_xlsx(result)
     filename = f"{result.drawing_name}_takeoff.xlsx"
     quoted = urllib.parse.quote(filename)
+    comp_header = "provisional" if result.is_provisional else "confirmed"
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "X-Takeoff-Completeness": comp_header,
+            "X-Takeoff-Unresolved-Count": str(result.unresolved_count),
+        },
     )

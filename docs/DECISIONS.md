@@ -83,12 +83,17 @@
 **확정 (Accepted)**
 
 ### 결정 사항
-1. **정규 품목 식별 키 (Canonical Item Key)**:
-   - P0 산출 엔진에서 품목 집계의 고유 기준 키는 `item_code`입니다 (PRD §7.1 준수).
-   - 동일한 블록 매핑에서 동일 `item_code`에 대해 단위(`unit`) 또는 규격(`specification`)이 상충되는 경우, 엔진은 임의의 저장 순서를 따르지 않고 `UNRESOLVED`(`매핑 충돌: 동순위 상충`)로 fail-closed 차단합니다.
+1. **정규 품목 식별 키 (Canonical Item Key) 및 1 item_code = 1 canonical definition 원칙**:
+   - P0 산출 엔진 및 API 스토리지 계층에서 품목 집계의 고유 기준 키는 `item_code`입니다 (PRD §7.1 준수).
+   - **API 및 엔진 정합성 계약**:
+     - `PUT /mappings` 요청 시 동일 도면 내에서 동일 `item_code`에 대해 단위(`unit`) 또는 규격(`specification`)이 상충하는 규칙이 포함된 경우(동일 블록 및 서로 다른 블록 간 모두 포함), API는 **HTTP 400 Bad Request**로 즉시 거부합니다.
+     - `POST /manual-objects` 시 지정된 `item_code`의 단위(`unit`)가 도면 매핑에 정의된 정규 단위와 다를 경우 역시 **HTTP 400 Bad Request**로 즉시 거부합니다.
+     - API에서 엔진으로 매핑을 전달할 때 `unit`과 `specification`을 누락 없이 전달(`BlockMapping(..., unit=m.unit, specification=m.specification)`)하여 엔진 레벨의 동순위 상충 감지가 누락되지 않도록 보장합니다.
+     - 레거시 데이터나 파일 직접 조작으로 충돌 매핑이 스토리지에 존재하는 경우라도, 집계 빌드 경로(`build_takeoff_result`)에서 상충 품목을 감지하여 임의의 메타데이터 덮어쓰기나 서로 다른 단위(EA/SET)의 자동 합산을 엄격히 금지하고, 수량 0 EA 및 `UNRESOLVED`(`품목 정의 충돌`)로 fail-closed 격리합니다.
    - 복수 규격/단위의 다차원 품목 분류 체계 확장은 P1 과제로 분리합니다.
 2. **구조적 결함 및 미검증 CAD 블록의 검수 오버라이드 차단**:
    - 외부참조(`XREF_UNRESOLVED`), 블록 정의 누락(`MISSING_BLOCK_DEFINITION`), 순환 참조(`CIRCULAR_BLOCK_REFERENCE`)는 물론, 동적 블록(`DYNAMIC_BLOCK`), 익명 블록(`ANONYMOUS_BLOCK`), 중첩 계층(`NESTED_BLOCK` 하위 객체 및 상위 어셈블리 컨테이너)은 P0에서 CAD 자동 집계 및 사용자 `INCLUDED` 검수 오버라이드를 원천 차단합니다.
    - 사유: 도면 범례 및 설치 상세 검증 없이 임의의 CAD 요소를 실물 기구로 확정할 수 없으며, 필요 시 현장 검수를 거친 별도 수동 마커(`MANUAL_ADDED`)로만 보수 집계합니다.
 3. **도면 범위 미검증 시 보수적 잠정 기본값 고정**:
    - 도면 범례/범위(`count_scope_verified`) 검증 승인 체계가 도입되기 전까지 모든 물량산출은 `is_provisional = True`를 고정 기본값으로 유지하며, UI 및 CSV/XLSX에서 성급한 완료 배지 노출을 엄격히 금지합니다.
+   - 내보내기 응답 헤더(`X-Takeoff-Completeness`, `X-Takeoff-Unresolved-Count`)를 통해 전송 계층에서도 잠정 상태를 명시합니다.

@@ -111,7 +111,11 @@ def aggregate(
         # If multiple candidates at the highest specificity level map to conflicting item codes, units, or specs,
         # fail-closed with UNRESOLVED rather than relying on arbitrary storage order.
         candidate_keys = {
-            (c.item_code, getattr(c, "unit", None), getattr(c, "specification", None))
+            (
+                c.item_code,
+                (c.unit or "").strip(),
+                (c.specification or "").strip(),
+            )
             for c in candidates
         }
         if len(candidate_keys) > 1:

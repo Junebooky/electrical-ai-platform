@@ -32,4 +32,5 @@ All notable changes to the Electrical AI Platform are documented here.
   - Fail-closed collision detection on `(item_code, unit, specification)` mappings.
   - Review override defense rejecting `INCLUDED` on dynamic/anonymous blocks (`QA-09-C`).
   - Strict withholding of nested hierarchy (both parents and children) from CAD auto count (`QA-09-D`), with verified installations tracked via manual objects (`MIXED` takeoff).
+  - End-to-end ADR-005 canonical item contract across API and Engine: full attribute propagation to `BlockMapping`, 400 Bad Request on conflicting units/specifications across rules, and fail-closed legacy isolation with provisional export headers.
 

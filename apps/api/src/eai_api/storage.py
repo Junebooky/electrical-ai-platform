@@ -183,6 +183,7 @@ class Storage:
     def save_mappings(
         self, project_id: str, drawing_id: str, mappings: list[ItemMappingRule]
     ) -> None:
+        validate_canonical_mappings(mappings)
         f = self.projects_dir / project_id / "drawings" / drawing_id / "mappings.json"
         self._save_json(f, [m.model_dump(mode="json") for m in mappings])
 
@@ -237,6 +238,59 @@ class Storage:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def find_canonical_item_conflicts(
+    mapping_rules: list[ItemMappingRule],
+) -> tuple[dict[str, ItemMappingRule], set[str]]:
+    """Verify ADR-005: 1 item_code = 1 canonical definition (unit, specification).
+    Returns (canonical_meta, conflicted_item_codes).
+    If multiple rules define conflicting units or specifications for the same item_code,
+    the item_code is flagged in conflicted_item_codes and neither definition overrides the other.
+    """
+    canonical_meta: dict[str, ItemMappingRule] = {}
+    conflicted_codes: set[str] = set()
+
+    for m in mapping_rules:
+        if m.item_code in ("EXCLUDE", "UNMAPPED"):
+            continue
+        code = m.item_code
+        if code in canonical_meta:
+            prev = canonical_meta[code]
+            prev_u = (prev.unit or "").strip()
+            curr_u = (m.unit or "").strip()
+            prev_s = (prev.specification or "").strip()
+            curr_s = (m.specification or "").strip()
+
+            if prev_u != curr_u or prev_s != curr_s:
+                conflicted_codes.add(code)
+            elif not prev.item_name and m.item_name:
+                # Merge non-empty item_name if definition matches
+                canonical_meta[code] = m
+        else:
+            canonical_meta[code] = m
+
+    return canonical_meta, conflicted_codes
+
+
+def validate_canonical_mappings(mapping_rules: list[ItemMappingRule]) -> None:
+    """Validate that mappings do not violate ADR-005 canonical item contract.
+    Raises ValueError with descriptive detail if conflicting definitions exist."""
+    _, conflicted = find_canonical_item_conflicts(mapping_rules)
+    if conflicted:
+        code = next(iter(sorted(conflicted)))
+        conflicting_rules = [r for r in mapping_rules if r.item_code == code]
+        r1, r2 = conflicting_rules[0], conflicting_rules[1]
+        diff_parts: list[str] = []
+        if (r1.unit or "").strip() != (r2.unit or "").strip():
+            diff_parts.append(f"단위('{r1.unit}' vs '{r2.unit}')")
+        if (r1.specification or "").strip() != (r2.specification or "").strip():
+            diff_parts.append(f"규격('{r1.specification}' vs '{r2.specification}')")
+        diff_str = " 및 ".join(diff_parts) or "규격/단위"
+        raise ValueError(
+            f"동일한 item_code('{code}')에 대해 서로 다른 {diff_str}이 지정되었습니다. "
+            f"P0에서는 1 item_code = 1 canonical definition 원칙을 준수해야 합니다 (ADR-005)."
+        )
+
+
 def build_takeoff_result(
     drawing: NormalizedDrawing,
     meta: dict[str, Any],
@@ -245,18 +299,20 @@ def build_takeoff_result(
     manual_objects: list[ManualObjectItem],
 ) -> TakeoffResult:
     """Build PRD 7.1 and 7.2 summary and evidence rows with user overrides."""
-    # Convert mapping rules to takeoff BlockMapping
+    # Convert mapping rules to takeoff BlockMapping with full unit and specification (ADR-005)
     engine_mappings = [
         BlockMapping(
             block_name=m.block_name,
             layer=m.layer,
             item_code=m.item_code,
+            unit=m.unit,
+            specification=m.specification,
         )
         for m in mapping_rules
     ]
 
-    # Map item code to metadata
-    item_meta: dict[str, ItemMappingRule] = {m.item_code: m for m in mapping_rules}
+    # Map item code to canonical metadata and detect cross-mapping attribute conflicts (ADR-005)
+    item_meta, conflicted_codes = find_canonical_item_conflicts(mapping_rules)
 
     # Run deterministic base aggregation
     agg = aggregate(drawing, engine_mappings)
@@ -275,6 +331,12 @@ def build_takeoff_result(
         base_item_code = res.item_code if res else None
         base_disp = res.disposition if res else Disposition.UNMAPPED
 
+        # ADR-005: If base_item_code has conflicting canonical definitions across mappings,
+        # fail-closed to UNRESOLVED regardless of block matching!
+        is_canonical_conflict = bool(base_item_code and base_item_code in conflicted_codes)
+        if is_canonical_conflict:
+            base_disp = Disposition.UNRESOLVED
+
         # Determine base inclusion
         if base_disp == Disposition.INCLUDED:
             inc_status = InclusionStatus.INCLUDED
@@ -287,7 +349,12 @@ def build_takeoff_result(
         elif base_disp == Disposition.UNRESOLVED:
             inc_status = InclusionStatus.EXCLUDED
             rev_status = ReviewStatus.UNRESOLVED
-            reason = res.reason if res else "미확인 블록"
+            if is_canonical_conflict:
+                reason = f"품목 정의 충돌: 동일 item_code('{base_item_code}')에 상충하는 단위/규격 매핑 (ADR-005)"
+            elif res and res.reason:
+                reason = res.reason
+            else:
+                reason = "미확인 블록"
         else:
             inc_status = InclusionStatus.EXCLUDED
             rev_status = ReviewStatus.UNREVIEWED
@@ -329,11 +396,15 @@ def build_takeoff_result(
         # Apply User Review Override
         override = reviews.get(obj.id)
         if override:
-            if is_structurally_blocked and override.inclusion_status == InclusionStatus.INCLUDED:
-                # Defend against false positive confirmation of structurally unverified CAD entities
+            override_code = override.mapped_item_code or base_item_code
+            is_override_conflict = bool(override_code and override_code in conflicted_codes)
+            if (is_structurally_blocked or is_canonical_conflict or is_override_conflict) and override.inclusion_status == InclusionStatus.INCLUDED:
+                # Defend against false positive confirmation of structurally unverified or definition-conflicted entities
                 inc_status = InclusionStatus.EXCLUDED
                 rev_status = ReviewStatus.UNRESOLVED
-                if is_dynamic_or_anon_blocked:
+                if is_canonical_conflict or is_override_conflict:
+                    reason = "품목 정의 충돌 객체는 CAD 자동 집계에 포함할 수 없습니다 (ADR-005)"
+                elif is_dynamic_or_anon_blocked:
                     reason = (
                         "동적/익명 블록은 검수 근거 없이 CAD 자동 집계에 포함할 수 없습니다 (필요 시 수동 추가 사용)"
                     )
@@ -402,6 +473,16 @@ def build_takeoff_result(
         rev_status = ReviewStatus.REVIEWED
         reason = mo.note or "수동 추가 기구"
 
+        # Check unit consistency with canonical mapping rule (ADR-005)
+        if mapped_item_code in item_meta:
+            expected_u = (item_meta[mapped_item_code].unit or "EA").strip()
+            actual_u = (mo.unit or "EA").strip()
+            if expected_u != actual_u:
+                conflicted_codes.add(mapped_item_code)
+                inc_status = InclusionStatus.EXCLUDED
+                rev_status = ReviewStatus.UNRESOLVED
+                reason = f"수동 추가 기구 단위('{mo.unit}')가 도면 매핑 정규 단위('{expected_u}')와 상충 (ADR-005)"
+
         override = reviews.get(mo.id)
         if override:
             inc_status = override.inclusion_status
@@ -436,7 +517,7 @@ def build_takeoff_result(
 
     for ev in evidence_rows:
         code = ev.mapped_item_code
-        if not code or code in ("UNMAPPED", "EXCLUDE"):
+        if not code or code in ("UNMAPPED", "EXCLUDE") or code in conflicted_codes:
             continue
 
         if ev.inclusion_status in (InclusionStatus.INCLUDED, InclusionStatus.MANUAL_ADDED):
@@ -458,29 +539,39 @@ def build_takeoff_result(
     all_codes = sorted(set(list(counts.keys()) + [m.item_code for m in mapping_rules if m.item_code != "EXCLUDE"]))
 
     for code in all_codes:
-        qty = counts.get(code, 0)
-        m_set = methods.get(code, set())
-        if "MANUAL" in m_set and "CAD_BLOCK" in m_set:
-            q_method = QuantityMethod.MIXED
-        elif "MANUAL" in m_set:
-            q_method = QuantityMethod.MANUAL
-        else:
+        if code in conflicted_codes:
+            qty = 0
             q_method = QuantityMethod.CAD_BLOCK
-
-        r_set = review_states.get(code, set())
-        notes = ""
-        if ReviewStatus.UNRESOLVED in r_set:
             r_status = ReviewStatus.UNRESOLVED
-            notes = "미해결 객체(XREF/정의누락 등) 포함 - 현장 확인 필요"
-        elif ReviewStatus.UNREVIEWED in r_set or not r_set:
-            r_status = ReviewStatus.UNREVIEWED
+            notes = "품목 정의 충돌: 서로 다른 규격/단위 상충 (ADR-005) - 집계 불가"
+            m_info = item_meta.get(code)
+            name = m_info.item_name if m_info and m_info.item_name else code
+            spec = "[상충 규격 충돌]"
+            unit = "[상충 단위 충돌]"
         else:
-            r_status = ReviewStatus.REVIEWED
+            qty = counts.get(code, 0)
+            m_set = methods.get(code, set())
+            if "MANUAL" in m_set and "CAD_BLOCK" in m_set:
+                q_method = QuantityMethod.MIXED
+            elif "MANUAL" in m_set:
+                q_method = QuantityMethod.MANUAL
+            else:
+                q_method = QuantityMethod.CAD_BLOCK
 
-        m_info = item_meta.get(code)
-        name = m_info.item_name if m_info and m_info.item_name else code
-        spec = m_info.specification if m_info and m_info.specification else ""
-        unit = m_info.unit if m_info and m_info.unit else "EA"
+            r_set = review_states.get(code, set())
+            notes = ""
+            if ReviewStatus.UNRESOLVED in r_set:
+                r_status = ReviewStatus.UNRESOLVED
+                notes = "미해결 객체(XREF/정의누락 등) 포함 - 현장 확인 필요"
+            elif ReviewStatus.UNREVIEWED in r_set or not r_set:
+                r_status = ReviewStatus.UNREVIEWED
+            else:
+                r_status = ReviewStatus.REVIEWED
+
+            m_info = item_meta.get(code)
+            name = m_info.item_name if m_info and m_info.item_name else code
+            spec = m_info.specification if m_info and m_info.specification else ""
+            unit = m_info.unit if m_info and m_info.unit else "EA"
 
         summary_rows.append(
             TakeoffSummaryRow(

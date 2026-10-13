@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
 from pathlib import Path
 
 import openpyxl
@@ -881,5 +882,146 @@ def test_conservative_provisional_policy_without_scope_verification(client: Test
     assert all(s["review_status"] == "REVIEWED" for s in t_reviewed["summary"])
     # Without explicit count_scope_verified, is_provisional must remain True!
     assert t_reviewed["is_provisional"] is True
+
+
+def test_adr_005_api_mapping_validation_and_canonical_item_contract(client: TestClient) -> None:
+    """Issue #9 / ADR-005: Full API validation and fail-closed isolation for canonical item definitions."""
+    proj = client.post("/api/projects", json={"name": "ADR-005 정규 품목 계약 검증"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # 1. SCENARIO A: Same block, same code, conflicting units ("EA" vs "SET")
+    res_a = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA", "specification": "6인치"},
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "SET", "specification": "6인치"},
+        ],
+    )
+    assert res_a.status_code == 400
+    assert "서로 다른 단위('EA' vs 'SET')" in res_a.json()["detail"]
+    assert "ADR-005" in res_a.json()["detail"]
+
+    # 2. SCENARIO B: Same block, same code, conflicting specifications ("6인치" vs "12인치")
+    res_b = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA", "specification": "6인치"},
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA", "specification": "12인치"},
+        ],
+    )
+    assert res_b.status_code == 400
+    assert "서로 다른 규격('6인치' vs '12인치')" in res_b.json()["detail"]
+
+    # 3. SCENARIO C: Different blocks, same code, conflicting units
+    res_c = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA"},
+            {"block_name": "OT-2P", "item_code": "LIGHT", "unit": "SET"},
+        ],
+    )
+    assert res_c.status_code == 400
+    assert "서로 다른 단위" in res_c.json()["detail"]
+
+    # 4. SCENARIO D: Reversed order also rejected with 400
+    res_d = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "OT-2P", "item_code": "LIGHT", "unit": "SET"},
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA"},
+        ],
+    )
+    assert res_d.status_code == 400
+
+    # 5. Save a valid canonical mapping: LIGHT as EA
+    valid_res = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA", "specification": "6인치 LED"},
+            {"block_name": "OT-2P", "item_code": "OUTLET", "unit": "EA", "specification": "매입 2구"},
+        ],
+    )
+    assert valid_res.status_code == 200
+
+    # 6. SCENARIO E: Manual object unit mismatch against canonical mapping fails
+    mo_bad = client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "man_err_1",
+            "drawing_id": drawing_id,
+            "item_code": "LIGHT",
+            "unit": "SET",  # Canonical mapping is EA!
+            "x": 100.0,
+            "y": 100.0,
+        },
+    )
+    assert mo_bad.status_code == 400
+    assert "정규 단위('EA')와 일치하지 않습니다" in mo_bad.json()["detail"]
+
+    # 7. SCENARIO F: Legacy / Tampered Storage Simulation (Direct file injection of conflicting mappings)
+    # Bypass PUT /mappings by directly writing conflicting mappings into storage
+    from eai_api.app import storage
+    drawings_dir = storage.projects_dir / project_id / "drawings" / drawing_id
+    tampered_mappings = [
+        {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA", "specification": "6인치"},
+        {"block_name": "OT-2P", "item_code": "LIGHT", "unit": "SET", "specification": "12인치"},
+    ]
+    (drawings_dir / "mappings.json").write_text(json.dumps(tampered_mappings), encoding="utf-8")
+
+    # Call GET /takeoff: must fail-closed without silent summing!
+    t_tampered = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    light_row = next(r for r in t_tampered["summary"] if r["item_code"] == "LIGHT")
+    assert light_row["quantity"] == 0, "Conflicted item_code MUST NOT be counted"
+    assert light_row["review_status"] == "UNRESOLVED"
+    assert "품목 정의 충돌" in light_row["notes"]
+    assert light_row["specification"] == "[상충 규격 충돌]"
+    assert light_row["unit"] == "[상충 단위 충돌]"
+    assert t_tampered["is_provisional"] is True
+    assert t_tampered["unresolved_count"] > 0
+
+    # User attempting INCLUDED review override on conflicted item is blocked!
+    ev_light = next(e for e in t_tampered["evidence"] if e["mapped_item_code"] == "LIGHT")
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": ev_light["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT",
+                "reason": "충돌 품목 강제 포함 시도",
+            }
+        ],
+    )
+    t_after_override = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    ev_after = next(e for e in t_after_override["evidence"] if e["source_object_id"] == ev_light["source_object_id"])
+    assert ev_after["inclusion_status"] == "EXCLUDED"
+    assert ev_after["review_status"] == "UNRESOLVED"
+    assert "품목 정의 충돌 객체는 CAD 자동 집계에 포함할 수 없습니다" in ev_after["review_reason"]
+
+    # Verify reversed order in legacy storage produces identical safe result (no flip-flopping)
+    tampered_reversed = list(reversed(tampered_mappings))
+    (drawings_dir / "mappings.json").write_text(json.dumps(tampered_reversed), encoding="utf-8")
+    t_rev = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    light_rev_row = next(r for r in t_rev["summary"] if r["item_code"] == "LIGHT")
+    assert light_rev_row["quantity"] == 0
+    assert light_rev_row["review_status"] == "UNRESOLVED"
+
+    # Verify export headers
+    csv_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv")
+    assert csv_res.headers["X-Takeoff-Completeness"] == "provisional"
+    assert int(csv_res.headers["X-Takeoff-Unresolved-Count"]) > 0
+
+    xlsx_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx")
+    assert xlsx_res.headers["X-Takeoff-Completeness"] == "provisional"
+    assert int(xlsx_res.headers["X-Takeoff-Unresolved-Count"]) > 0
+
 
 
