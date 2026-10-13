@@ -28,6 +28,8 @@ All notable changes to the Electrical AI Platform are documented here.
   - Object review drawer (exclude false positives, restore, update mappings).
   - Manual object placement tool on canvas.
   - Warning banner showing drawing issues.
-- **Documentation & CI**:
-  - `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `docs/CAD_SCHEMA.md`, `docs/API_CONTRACT.md`, `docs/ESTIMATION_RULES.md`, `docs/ROADMAP.md`.
-  - GitHub Actions CI workflow running lint, type-check, tests, and build.
+- **Domain & Takeoff Safety (DEC-010 ~ DEC-014 / ADR-005)**:
+  - Fail-closed collision detection on `(item_code, unit, specification)` mappings.
+  - Review override defense rejecting `INCLUDED` on dynamic/anonymous blocks (`QA-09-C`).
+  - Strict withholding of nested hierarchy (both parents and children) from CAD auto count (`QA-09-D`), with verified installations tracked via manual objects (`MIXED` takeoff).
+

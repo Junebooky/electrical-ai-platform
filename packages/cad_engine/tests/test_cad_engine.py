@@ -211,3 +211,44 @@ def test_dynamic_and_anonymous_block_blocking_dec_014() -> None:
     dyn_unresolved = [o for o in res.objects if o.disposition == Disposition.UNRESOLVED]
     assert len(dyn_unresolved) == 1
     assert "동적/익명 블록: 가시성·구조 검수 필요" in dyn_unresolved[0].reason
+
+
+def test_mapping_attribute_collision_fails_closed_unresolved() -> None:
+    """Issue #9 / DEC-013: Conflicting units or specifications for the same block fail-closed to UNRESOLVED."""
+    dxf_path = FIXTURES_DIR / "basic_devices.dxf"
+    drawing = parse_dxf(dxf_path.read_bytes(), filename=dxf_path.name)
+
+    # Two rules for same block and layer with same item_code but conflicting units
+    rule_ea = BlockMapping(block_name="LT-DL", layer="E-LIGHT", item_code="LIGHT", unit="EA")
+    rule_set = BlockMapping(block_name="LT-DL", layer="E-LIGHT", item_code="LIGHT", unit="SET")
+
+    res = aggregate(drawing, [rule_ea, rule_set])
+    assert len(res.counts) == 0
+    unresolved = [o for o in res.objects if o.disposition == Disposition.UNRESOLVED]
+    assert len(unresolved) == 6
+    assert all("매핑 충돌" in o.reason for o in unresolved)
+
+
+def test_nested_hierarchy_withholding_qa_09_d() -> None:
+    """Issue #9 / QA-09-D: In nested_blocks.dxf, only independent fixture is counted (LIGHT=1), nested & parent are UNRESOLVED."""
+    dxf_path = FIXTURES_DIR / "nested_blocks.dxf"
+    drawing = parse_dxf(dxf_path.read_bytes(), filename=dxf_path.name)
+
+    # Map both parent group and child fixture
+    mappings = [
+        BlockMapping(block_name="LT-DL", item_code="LIGHT", unit="EA"),
+        BlockMapping(block_name="LT-GROUP", item_code="LIGHT", unit="EA"),
+    ]
+    res = aggregate(drawing, mappings)
+
+    # Exactly 1 top-level independent LT-DL is counted!
+    assert res.counts == {"LIGHT": 1}
+
+    # 4 nested LT-DL + 2 parent LT-GROUP are all UNRESOLVED
+    unresolved_objects = [o for o in res.objects if o.disposition == Disposition.UNRESOLVED]
+    assert len(unresolved_objects) == 6
+    parent_unresolved = [o for o in unresolved_objects if "상위 어셈블리" in o.reason]
+    child_unresolved = [o for o in unresolved_objects if "상위 어셈블리" not in o.reason]
+    assert len(parent_unresolved) == 2
+    assert len(child_unresolved) == 4
+

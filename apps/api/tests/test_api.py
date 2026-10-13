@@ -611,9 +611,60 @@ def test_provisional_and_unresolved_contracts(client: TestClient) -> None:
     assert t1["unresolved_count"] > 0
 
 
-def test_nested_block_parent_child_double_count_defense(client: TestClient) -> None:
-    """Issue #9 / DEC-014: Enforce parent + child nested block double-count defense against review overrides."""
-    proj = client.post("/api/projects", json={"name": "중첩 블록 중복 계수 방어"}).json()
+def test_dynamic_and_anonymous_block_override_defense_qa_09_c(client: TestClient) -> None:
+    """Issue #9 / QA-09-C: Dynamic/anonymous blocks must NEVER be forcefully included via user review override."""
+    proj = client.post("/api/projects", json={"name": "동적 블록 오버라이드 방어"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "anonymous_and_dynamic.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Map LT-DYN (which has DYNAMIC_BLOCK warning)
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[{"block_name": "LT-DYN", "item_code": "LIGHT", "unit": "EA"}],
+    )
+
+    t0 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    sum0 = {r["item_code"]: r["quantity"] for r in t0["summary"]}
+    assert sum0.get("LIGHT", 0) == 0
+
+    dyn_ev = next(e for e in t0["evidence"] if e["block_name"] == "*U2" or "LT-DYN" in e["mapped_item_code"] or e["mapped_item_code"] == "LIGHT")
+    assert dyn_ev["inclusion_status"] == "EXCLUDED"
+    assert dyn_ev["review_status"] == "UNRESOLVED"
+
+    # ATTACK: User attempts to force override with INCLUDED + REVIEWED
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": dyn_ev["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT",
+                "reason": "동적 블록 강제 포함 시도",
+            }
+        ],
+    )
+
+    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    sum1 = {r["item_code"]: r["quantity"] for r in t1["summary"]}
+    assert sum1.get("LIGHT", 0) == 0  # Must remain 0 EA!
+    dyn_ev1 = next(e for e in t1["evidence"] if e["source_object_id"] == dyn_ev["source_object_id"])
+    assert dyn_ev1["inclusion_status"] == "EXCLUDED"
+    assert dyn_ev1["review_status"] == "UNRESOLVED"
+    assert "동적/익명 블록" in dyn_ev1["review_reason"]
+    assert t1["unresolved_count"] > 0
+    assert t1["is_provisional"] is True
+
+
+def test_nested_blocks_withholding_and_manual_addition_qa_09_d(client: TestClient) -> None:
+    """Issue #9 / QA-09-D: In nested_blocks.dxf, auto count is strictly LIGHT=1; overrides are blocked; manual additions add conservatively."""
+    proj = client.post("/api/projects", json={"name": "중첩 계층 보류 및 수동 산출 검증"}).json()
     project_id = proj["id"]
 
     nested_file = FIXTURES_DIR / "nested_blocks.dxf"
@@ -623,101 +674,92 @@ def test_nested_block_parent_child_double_count_defense(client: TestClient) -> N
     )
     drawing_id = upload_res.json()["drawing_id"]
 
-    # Map LT-GROUP (parent assembly, 2 inserts) and LT-DL (child inside LT-GROUP: 4 inserts, top-level: 1 insert)
+    # 1. Map both parent assembly LT-GROUP and child fixture LT-DL to LIGHT
     client.put(
         f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
         json=[
-            {"block_name": "LT-GROUP", "item_code": "LIGHT_GROUP", "unit": "EA"},
+            {"block_name": "LT-GROUP", "item_code": "LIGHT", "unit": "EA"},
             {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA"},
         ],
     )
 
     t0 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
     sum0 = {r["item_code"]: r["quantity"] for r in t0["summary"]}
-    assert sum0.get("LIGHT_GROUP") == 2
-    assert sum0.get("LIGHT") == 1  # Only top-level LT-DL is counted initially; nested ones are UNRESOLVED
+    # Only 1 independent top-level LT-DL is counted! Parent assemblies (2) & nested children (4) are withheld.
+    assert sum0.get("LIGHT") == 1
 
-    # Find a nested child LT-DL object whose parent is LT-GROUP
-    nested_child = next(
-        e for e in t0["evidence"]
-        if e["block_name"] == "LT-DL" and e["parent_source_id"] is not None
-    )
-    parent_id = nested_child["parent_source_id"]
-    assert parent_id is not None
+    # 2. Find parent object and child object
+    nested_child = next(e for e in t0["evidence"] if e["block_name"] == "LT-DL" and e["parent_source_id"] is not None)
+    parent_obj = next(e for e in t0["evidence"] if e["block_name"] == "LT-GROUP")
 
-    # ATTACK 1: User attempts to force override the nested child to INCLUDED while parent is INCLUDED
+    # 3. ATTACK: User attempts review override to force INCLUDED on parent and child
     client.put(
         f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
         json=[
+            {
+                "source_object_id": parent_obj["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT",
+                "reason": "상위 어셈블리 강제 포함 시도",
+            },
             {
                 "source_object_id": nested_child["source_object_id"],
                 "inclusion_status": "INCLUDED",
                 "review_status": "REVIEWED",
                 "mapped_item_code": "LIGHT",
-                "reason": "중첩 기구 강제 포함 시도",
-            }
+                "reason": "하위 중첩 블록 강제 포함 시도",
+            },
         ],
     )
 
     t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
-    # Child must NOT be double-counted! Child must be forced to EXCLUDED + UNRESOLVED
     sum1 = {r["item_code"]: r["quantity"] for r in t1["summary"]}
-    assert sum1.get("LIGHT") == 1  # Remained 1, NOT 2!
+    # CAD automatic count remains STRICTLY 1 EA!
+    assert sum1.get("LIGHT") == 1
+
+    parent_ev1 = next(e for e in t1["evidence"] if e["source_object_id"] == parent_obj["source_object_id"])
     child_ev1 = next(e for e in t1["evidence"] if e["source_object_id"] == nested_child["source_object_id"])
+    assert parent_ev1["inclusion_status"] == "EXCLUDED"
+    assert parent_ev1["review_status"] == "UNRESOLVED"
+    assert "중첩 블록 계층" in parent_ev1["review_reason"]
+
     assert child_ev1["inclusion_status"] == "EXCLUDED"
     assert child_ev1["review_status"] == "UNRESOLVED"
-    assert "중첩 기구: 상위 블록과 중복 집계 방지" in child_ev1["review_reason"]
+    assert "중첩 블록 계층" in child_ev1["review_reason"]
 
-    # ATTACK 2: User explicitly overrides BOTH parent to INCLUDED and child to INCLUDED
-    client.put(
-        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
-        json=[
-            {
-                "source_object_id": parent_id,
-                "inclusion_status": "INCLUDED",
-                "review_status": "REVIEWED",
-                "mapped_item_code": "LIGHT_GROUP",
-                "reason": "상위 블록 검수 포함",
+    # 4. FIELD VERIFICATION: Engineer verifies 4 actual lamps in field and adds 4 manual markers
+    for i in range(4):
+        mo_res = client.post(
+            f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+            json={
+                "id": f"manual_lt_{i + 1}",
+                "drawing_id": drawing_id,
+                "item_code": "LIGHT",
+                "item_name": "다운라이트 LED 6인치",
+                "x": 100.0 * (i + 1),
+                "y": 200.0 * (i + 1),
+                "note": f"현장 검수 확인 조명 #{i + 1}",
             },
-            {
-                "source_object_id": nested_child["source_object_id"],
-                "inclusion_status": "INCLUDED",
-                "review_status": "REVIEWED",
-                "mapped_item_code": "LIGHT",
-                "reason": "하위 블록 검수 동시 포함 시도",
-            },
-        ],
-    )
+        )
+        assert mo_res.status_code == 200
+
     t2 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
     sum2 = {r["item_code"]: r["quantity"] for r in t2["summary"]}
-    assert sum2.get("LIGHT_GROUP") == 2
-    assert sum2.get("LIGHT") == 1  # Child is blocked from double counting!
+    # Total provisional LIGHT quantity is now 1 (CAD) + 4 (MANUAL) = 5 EA!
+    assert sum2.get("LIGHT") == 5
 
-    # VALID ALTERNATIVE STRATEGY: User EXCLUDES parent assembly, and includes child components instead
-    client.put(
-        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
-        json=[
-            {
-                "source_object_id": parent_id,
-                "inclusion_status": "EXCLUDED",
-                "review_status": "REVIEWED",
-                "mapped_item_code": "LIGHT_GROUP",
-                "reason": "상위 어셈블리 집계 제외, 하위 개별 램프로 산출",
-            },
-            {
-                "source_object_id": nested_child["source_object_id"],
-                "inclusion_status": "INCLUDED",
-                "review_status": "REVIEWED",
-                "mapped_item_code": "LIGHT",
-                "reason": "하위 개별 기구로 산출 승인",
-            },
-        ],
-    )
-    t3 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
-    sum3 = {r["item_code"]: r["quantity"] for r in t3["summary"]}
-    # Parent decreased by 1 (2 -> 1), Child is now counted (1 -> 2)
-    assert sum3.get("LIGHT_GROUP") == 1
-    assert sum3.get("LIGHT") == 2
+    light_summary_row = next(r for r in t2["summary"] if r["item_code"] == "LIGHT")
+    assert light_summary_row["quantity_method"] == "MIXED"
+
+    # Verify ID uniqueness and evidence integrity
+    evidence_ids = [e["source_object_id"] for e in t2["evidence"]]
+    assert len(evidence_ids) == len(set(evidence_ids)), "All evidence IDs must be strictly unique"
+
+    manual_evs = [e for e in t2["evidence"] if e["inclusion_status"] == "MANUAL_ADDED"]
+    assert len(manual_evs) == 4
+    assert t2["is_provisional"] is True
+    assert t2["unresolved_count"] >= 6
 
 
 def test_deep_openpyxl_and_csv_reader_verification(client: TestClient) -> None:

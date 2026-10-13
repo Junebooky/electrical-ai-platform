@@ -32,11 +32,13 @@ class Disposition(StrEnum):
 class BlockMapping(BaseModel):
     """Map a block (by effective name, optionally restricted to a layer) to an item."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     block_name: str
     layer: str | None = None
     item_code: str = Field(description=f"Provisional item code, or '{EXCLUDE}'")
+    unit: str | None = None
+    specification: str | None = None
 
     def matches(self, obj: SourceObject) -> bool:
         name = obj.effective_block_name or obj.block_name
@@ -84,6 +86,8 @@ def aggregate(
 ) -> AggregateResult:
     policy = policy or CountPolicy()
     result = AggregateResult()
+    parent_ids = {o.parent_id for o in drawing.objects if o.parent_id is not None}
+
     for obj in drawing.objects:
         if obj.entity_type != "INSERT":
             continue
@@ -104,10 +108,13 @@ def aggregate(
         candidates = layer_specific_rules if layer_specific_rules else matching_rules
 
         # Tie collision detection (DEC-013):
-        # If multiple candidates at the highest specificity level map to conflicting item codes,
+        # If multiple candidates at the highest specificity level map to conflicting item codes, units, or specs,
         # fail-closed with UNRESOLVED rather than relying on arbitrary storage order.
-        candidate_codes = {c.item_code for c in candidates}
-        if len(candidate_codes) > 1:
+        candidate_keys = {
+            (c.item_code, getattr(c, "unit", None), getattr(c, "specification", None))
+            for c in candidates
+        }
+        if len(candidate_keys) > 1:
             result.objects.append(
                 ObjectResult(obj.id, Disposition.UNRESOLVED, None, "매핑 충돌: 동순위 상충")
             )
@@ -117,7 +124,7 @@ def aggregate(
         if mapping.item_code == EXCLUDE:
             result.objects.append(ObjectResult(obj.id, Disposition.EXCLUDED, None, "매핑에서 제외"))
             continue
-        reason = _unresolved_reason(obj, policy)
+        reason = _unresolved_reason(obj, policy, parent_ids)
         if reason is not None:
             result.objects.append(
                 ObjectResult(obj.id, Disposition.UNRESOLVED, mapping.item_code, reason)
@@ -131,12 +138,19 @@ def aggregate(
     return result
 
 
-def _unresolved_reason(obj: SourceObject, policy: CountPolicy) -> str | None:
+def _unresolved_reason(
+    obj: SourceObject,
+    policy: CountPolicy,
+    parent_ids: set[str] | None = None,
+) -> str | None:
     for code, reason in _BLOCKING.items():
         if code in obj.warnings:
             return reason
-    if obj.depth > 0 and not policy.count_nested:
+    if parent_ids and obj.id in parent_ids and not policy.count_nested:
+        return "중첩 블록 계층(상위 어셈블리): 집계 기준 미확정(A05)"
+    if (obj.depth > 0 or WarningCode.NESTED_BLOCK in obj.warnings) and not policy.count_nested:
         return "중첩 블록: 집계 기준 미확정(A05)"
     if not obj.visible and not policy.count_hidden_layers:
         return "꺼짐/동결 레이어"
     return None
+

@@ -266,9 +266,9 @@ def build_takeoff_result(
 
     # 1. Process CAD Objects
     cad_objects = [obj for obj in drawing.objects if obj.entity_type == "INSERT"]
-    obj_by_id = {obj.id: obj for obj in cad_objects}
+    parent_ids = {o.parent_id for o in cad_objects if o.parent_id is not None}
 
-    # Step 1A: Compute tentative statuses including structural blocking & reviews
+    # Step 1: Compute tentative statuses including structural & domain blocking & reviews
     tentative_status: dict[str, dict[str, Any]] = {}
     for obj in cad_objects:
         res = agg_by_id.get(obj.id)
@@ -293,15 +293,37 @@ def build_takeoff_result(
             rev_status = ReviewStatus.UNREVIEWED
             reason = "미매핑 블록"
 
-        # Structural blocking check (AC-06): XREF, missing block definitions, or circular references
-        # MUST NEVER be forcefully included into verified CAD counts.
-        is_structurally_blocked = any(
+        # Structural & Domain blocking check (AC-06 / DEC-014 / QA-09-C, QA-09-D):
+        # The following CAD entities MUST NEVER be forcefully included into verified CAD counts:
+        # 1. Structural defects (XREF, missing block definitions, circular references)
+        # 2. Dynamic blocks & anonymous blocks (DEC-014 / QA-09-C)
+        # 3. Nested block hierarchies (both nested children and parent assemblies) (DEC-014 / QA-09-D)
+        is_xref_or_def_blocked = any(
             code in obj.warnings
             for code in (
                 WarningCode.XREF_UNRESOLVED,
                 WarningCode.MISSING_BLOCK_DEFINITION,
                 WarningCode.CIRCULAR_BLOCK_REFERENCE,
             )
+        )
+        is_dynamic_or_anon_blocked = any(
+            code in obj.warnings
+            for code in (
+                WarningCode.DYNAMIC_BLOCK,
+                WarningCode.ANONYMOUS_BLOCK,
+            )
+        )
+        is_nested_hierarchy_blocked = (
+            obj.depth > 0
+            or WarningCode.NESTED_BLOCK in obj.warnings
+            or obj.parent_id is not None
+            or obj.id in parent_ids
+        )
+
+        is_structurally_blocked = (
+            is_xref_or_def_blocked
+            or is_dynamic_or_anon_blocked
+            or is_nested_hierarchy_blocked
         )
 
         # Apply User Review Override
@@ -311,7 +333,18 @@ def build_takeoff_result(
                 # Defend against false positive confirmation of structurally unverified CAD entities
                 inc_status = InclusionStatus.EXCLUDED
                 rev_status = ReviewStatus.UNRESOLVED
-                reason = "구조적 결함(외부참조/정의 누락) 객체는 CAD 자동 집계에 포함할 수 없습니다 (필요 시 수동 추가 사용)"
+                if is_dynamic_or_anon_blocked:
+                    reason = (
+                        "동적/익명 블록은 검수 근거 없이 CAD 자동 집계에 포함할 수 없습니다 (필요 시 수동 추가 사용)"
+                    )
+                elif is_nested_hierarchy_blocked:
+                    reason = (
+                        "중첩 블록 계층(상위/하위)은 P0 집계 기준 미확정으로 CAD 자동 집계에 포함할 수 없습니다 (필요 시 수동 추가 사용)"
+                    )
+                else:
+                    reason = (
+                        "구조적 결함(외부참조/정의 누락) 객체는 CAD 자동 집계에 포함할 수 없습니다 (필요 시 수동 추가 사용)"
+                    )
             else:
                 inc_status = override.inclusion_status
                 rev_status = override.review_status
@@ -322,7 +355,16 @@ def build_takeoff_result(
         elif is_structurally_blocked:
             inc_status = InclusionStatus.EXCLUDED
             rev_status = ReviewStatus.UNRESOLVED
-            reason = "외부참조(XREF) 또는 블록 정의 누락으로 집계 불가"
+            if is_dynamic_or_anon_blocked:
+                reason = "동적/익명 블록: 가시성·구조 검수 필요"
+            elif is_nested_hierarchy_blocked:
+                reason = (
+                    "중첩 블록 계층(상위 어셈블리): 집계 기준 미확정(A05)"
+                    if obj.id in parent_ids
+                    else "중첩 블록: 집계 기준 미확정(A05)"
+                )
+            else:
+                reason = "외부참조(XREF) 또는 블록 정의 누락으로 집계 불가"
 
         tentative_status[obj.id] = {
             "inc_status": inc_status,
@@ -330,27 +372,6 @@ def build_takeoff_result(
             "reason": reason,
             "item_code": base_item_code or "UNMAPPED",
         }
-
-    # Step 1B: Nested block double-counting defense (Issue #9 DEC-014)
-    # A parent block and a child/nested block cannot be simultaneously INCLUDED in takeoff.
-    # If any ancestor of a nested object is INCLUDED, the nested child cannot be INCLUDED.
-    for obj in cad_objects:
-        if tentative_status[obj.id]["inc_status"] == InclusionStatus.INCLUDED:
-            curr_parent_id = obj.parent_id
-            has_included_ancestor = False
-            while curr_parent_id:
-                anc = obj_by_id.get(curr_parent_id)
-                if anc and tentative_status.get(anc.id, {}).get("inc_status") == InclusionStatus.INCLUDED:
-                    has_included_ancestor = True
-                    break
-                curr_parent_id = anc.parent_id if anc else None
-
-            if has_included_ancestor:
-                tentative_status[obj.id]["inc_status"] = InclusionStatus.EXCLUDED
-                tentative_status[obj.id]["rev_status"] = ReviewStatus.UNRESOLVED
-                tentative_status[obj.id]["reason"] = (
-                    "중첩 기구: 상위 블록과 중복 집계 방지 (상위/하위 동시 집계 불가)"
-                )
 
     for obj in cad_objects:
         st = tentative_status[obj.id]
