@@ -53,18 +53,30 @@ export default function WorkspacePage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef<number>(0);
+  const refreshSeqRef = useRef<number>(0);
   const activeDrawingIdRef = useRef<string | null>(null);
 
   // When a drawing is loaded or mappings change, refresh takeoff
   const refreshTakeoff = useCallback(async (projectId: string, drawingId: string) => {
+    const seq = ++refreshSeqRef.current;
     try {
       const res = await api.getTakeoff(projectId, drawingId);
-      if (activeDrawingIdRef.current !== drawingId) {
+      if (activeDrawingIdRef.current !== drawingId || refreshSeqRef.current !== seq) {
         return; // Stale request, discard
       }
       setTakeoff(res);
-    } catch (err) {
+    } catch (err: unknown) {
+      if (activeDrawingIdRef.current !== drawingId || refreshSeqRef.current !== seq) {
+        return; // Stale request error, discard
+      }
       console.error("Failed to refresh takeoff", err);
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+          ? err.message
+          : "물량산출 재계산에 실패했습니다.";
+      setErrorMessage(`물량산출 재계산 실패: ${msg}`);
     }
   }, []);
 

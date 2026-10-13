@@ -19,10 +19,8 @@
       "item_code": "LIGHT"
     }
   ],
-  "expected_counts": {
-    "LIGHT": 1
-  },
-  "expected_unresolved": 0,
+  "expected_counts": {},
+  "expected_unresolved": 1,
   "expected_unmapped": 2,
   "insert_checks": [
     {

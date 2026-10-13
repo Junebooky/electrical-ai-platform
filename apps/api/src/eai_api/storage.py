@@ -265,10 +265,12 @@ def build_takeoff_result(
     evidence_rows: list[TakeoffEvidenceRow] = []
 
     # 1. Process CAD Objects
-    for obj in drawing.objects:
-        if obj.entity_type != "INSERT":
-            continue
+    cad_objects = [obj for obj in drawing.objects if obj.entity_type == "INSERT"]
+    obj_by_id = {obj.id: obj for obj in cad_objects}
 
+    # Step 1A: Compute tentative statuses including structural blocking & reviews
+    tentative_status: dict[str, dict[str, Any]] = {}
+    for obj in cad_objects:
         res = agg_by_id.get(obj.id)
         base_item_code = res.item_code if res else None
         base_disp = res.disposition if res else Disposition.UNMAPPED
@@ -322,7 +324,36 @@ def build_takeoff_result(
             rev_status = ReviewStatus.UNRESOLVED
             reason = "외부참조(XREF) 또는 블록 정의 누락으로 집계 불가"
 
-        # Coordinates
+        tentative_status[obj.id] = {
+            "inc_status": inc_status,
+            "rev_status": rev_status,
+            "reason": reason,
+            "item_code": base_item_code or "UNMAPPED",
+        }
+
+    # Step 1B: Nested block double-counting defense (Issue #9 DEC-014)
+    # A parent block and a child/nested block cannot be simultaneously INCLUDED in takeoff.
+    # If any ancestor of a nested object is INCLUDED, the nested child cannot be INCLUDED.
+    for obj in cad_objects:
+        if tentative_status[obj.id]["inc_status"] == InclusionStatus.INCLUDED:
+            curr_parent_id = obj.parent_id
+            has_included_ancestor = False
+            while curr_parent_id:
+                anc = obj_by_id.get(curr_parent_id)
+                if anc and tentative_status.get(anc.id, {}).get("inc_status") == InclusionStatus.INCLUDED:
+                    has_included_ancestor = True
+                    break
+                curr_parent_id = anc.parent_id if anc else None
+
+            if has_included_ancestor:
+                tentative_status[obj.id]["inc_status"] = InclusionStatus.EXCLUDED
+                tentative_status[obj.id]["rev_status"] = ReviewStatus.UNRESOLVED
+                tentative_status[obj.id]["reason"] = (
+                    "중첩 기구: 상위 블록과 중복 집계 방지 (상위/하위 동시 집계 불가)"
+                )
+
+    for obj in cad_objects:
+        st = tentative_status[obj.id]
         x = obj.insert_point[0] if obj.insert_point else 0.0
         y = obj.insert_point[1] if obj.insert_point else 0.0
 
@@ -336,10 +367,10 @@ def build_takeoff_result(
                 entity_type=obj.entity_type,
                 x=x,
                 y=y,
-                mapped_item_code=base_item_code or "UNMAPPED",
-                inclusion_status=inc_status,
-                review_status=rev_status,
-                review_reason=reason,
+                mapped_item_code=st["item_code"],
+                inclusion_status=st["inc_status"],
+                review_status=st["rev_status"],
+                review_reason=st["reason"],
             )
         )
 
@@ -452,8 +483,14 @@ def build_takeoff_result(
         for e in evidence_rows
         if e.review_status == ReviewStatus.UNRESOLVED or e.mapped_item_code == "UNMAPPED"
     )
-    is_provisional = (unresolved_count > 0) or any(
-        s.review_status != ReviewStatus.REVIEWED for s in summary_rows
+    # In P0 (DEC-011 / Issue #9), drawings lack formal legend/count_scope verification.
+    # Therefore, takeoffs remain provisional (is_provisional = True) by default
+    # unless explicit certified count scope metadata is present.
+    is_count_scope_verified = bool(meta.get("count_scope_verified", False))
+    is_provisional = (
+        not is_count_scope_verified
+        or (unresolved_count > 0)
+        or any(s.review_status != ReviewStatus.REVIEWED for s in summary_rows)
     )
 
     return TakeoffResult(

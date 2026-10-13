@@ -477,6 +477,7 @@ def test_export_formula_injection_defense(client: TestClient) -> None:
         "drawing_name",
         "drawing_revision",
         "exported_at",
+        "completeness_status",
         "notes",
     ]
     # Check row 1 fields
@@ -608,5 +609,235 @@ def test_provisional_and_unresolved_contracts(client: TestClient) -> None:
     # Still provisional because other blocks (OT-2P, SW-1, etc.) remain unmapped
     assert t1["is_provisional"] is True
     assert t1["unresolved_count"] > 0
+
+
+def test_nested_block_parent_child_double_count_defense(client: TestClient) -> None:
+    """Issue #9 / DEC-014: Enforce parent + child nested block double-count defense against review overrides."""
+    proj = client.post("/api/projects", json={"name": "중첩 블록 중복 계수 방어"}).json()
+    project_id = proj["id"]
+
+    nested_file = FIXTURES_DIR / "nested_blocks.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (nested_file.name, nested_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Map LT-GROUP (parent assembly, 2 inserts) and LT-DL (child inside LT-GROUP: 4 inserts, top-level: 1 insert)
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-GROUP", "item_code": "LIGHT_GROUP", "unit": "EA"},
+            {"block_name": "LT-DL", "item_code": "LIGHT", "unit": "EA"},
+        ],
+    )
+
+    t0 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    sum0 = {r["item_code"]: r["quantity"] for r in t0["summary"]}
+    assert sum0.get("LIGHT_GROUP") == 2
+    assert sum0.get("LIGHT") == 1  # Only top-level LT-DL is counted initially; nested ones are UNRESOLVED
+
+    # Find a nested child LT-DL object whose parent is LT-GROUP
+    nested_child = next(
+        e for e in t0["evidence"]
+        if e["block_name"] == "LT-DL" and e["parent_source_id"] is not None
+    )
+    parent_id = nested_child["parent_source_id"]
+    assert parent_id is not None
+
+    # ATTACK 1: User attempts to force override the nested child to INCLUDED while parent is INCLUDED
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": nested_child["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT",
+                "reason": "중첩 기구 강제 포함 시도",
+            }
+        ],
+    )
+
+    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    # Child must NOT be double-counted! Child must be forced to EXCLUDED + UNRESOLVED
+    sum1 = {r["item_code"]: r["quantity"] for r in t1["summary"]}
+    assert sum1.get("LIGHT") == 1  # Remained 1, NOT 2!
+    child_ev1 = next(e for e in t1["evidence"] if e["source_object_id"] == nested_child["source_object_id"])
+    assert child_ev1["inclusion_status"] == "EXCLUDED"
+    assert child_ev1["review_status"] == "UNRESOLVED"
+    assert "중첩 기구: 상위 블록과 중복 집계 방지" in child_ev1["review_reason"]
+
+    # ATTACK 2: User explicitly overrides BOTH parent to INCLUDED and child to INCLUDED
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": parent_id,
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT_GROUP",
+                "reason": "상위 블록 검수 포함",
+            },
+            {
+                "source_object_id": nested_child["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT",
+                "reason": "하위 블록 검수 동시 포함 시도",
+            },
+        ],
+    )
+    t2 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    sum2 = {r["item_code"]: r["quantity"] for r in t2["summary"]}
+    assert sum2.get("LIGHT_GROUP") == 2
+    assert sum2.get("LIGHT") == 1  # Child is blocked from double counting!
+
+    # VALID ALTERNATIVE STRATEGY: User EXCLUDES parent assembly, and includes child components instead
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": parent_id,
+                "inclusion_status": "EXCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT_GROUP",
+                "reason": "상위 어셈블리 집계 제외, 하위 개별 램프로 산출",
+            },
+            {
+                "source_object_id": nested_child["source_object_id"],
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "LIGHT",
+                "reason": "하위 개별 기구로 산출 승인",
+            },
+        ],
+    )
+    t3 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    sum3 = {r["item_code"]: r["quantity"] for r in t3["summary"]}
+    # Parent decreased by 1 (2 -> 1), Child is now counted (1 -> 2)
+    assert sum3.get("LIGHT_GROUP") == 1
+    assert sum3.get("LIGHT") == 2
+
+
+def test_deep_openpyxl_and_csv_reader_verification(client: TestClient) -> None:
+    """Issue #7: Thorough openpyxl workbook parsing and standard RFC csv.reader verification."""
+    proj = client.post("/api/projects", json={"name": "내보내기 신뢰성 검증"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Map LT-DL, OT-2P, SW-1
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"},
+            {"block_name": "OT-2P", "item_code": "OUTLET", "item_name": "매입콘센트 2구", "unit": "EA"},
+            {"block_name": "SW-1", "item_code": "SWITCH", "item_name": "1로 텀블러 스위치", "unit": "EA"},
+        ],
+    )
+
+    # 1. Verify CSV Summary with standard python csv.reader
+    csv_sum_bytes = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=summary").content
+    csv_text = csv_sum_bytes.decode("utf-8-sig")
+    reader = csv.reader(io.StringIO(csv_text))
+    rows = list(reader)
+
+    header = rows[0]
+    assert header[0] == "item_code"
+    assert header[4] == "quantity"
+    assert header[10] == "exported_at"
+    assert header[11] == "completeness_status"
+    assert header[12] == "notes"
+
+    data_rows = {r[0]: r for r in rows[1:]}
+    assert int(data_rows["LIGHT"][4]) == 6
+    assert int(data_rows["OUTLET"][4]) == 4
+    assert int(data_rows["SWITCH"][4]) == 3
+    assert "잠정" in data_rows["LIGHT"][11]
+
+    # 2. Verify Excel with openpyxl.load_workbook
+    xlsx_bytes = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx").content
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes))
+    assert wb.sheetnames == ["Takeoff Summary", "Takeoff Evidence"]
+
+    # Inspect Takeoff Summary sheet
+    ws_sum = wb["Takeoff Summary"]
+    assert ws_sum.cell(row=1, column=1).value == "품목코드 (item_code)"
+    assert ws_sum.cell(row=1, column=5).value == "산출 수량 (quantity)"
+    assert ws_sum.cell(row=1, column=12).value == "산출 상태 (completeness_status)"
+
+    summary_data = {}
+    for r in range(2, ws_sum.max_row + 1):
+        item_code = ws_sum.cell(row=r, column=1).value
+        qty = ws_sum.cell(row=r, column=5).value
+        status = ws_sum.cell(row=r, column=12).value
+        summary_data[item_code] = {"qty": qty, "status": status}
+        # Invariant: no formula cells
+        for c in range(1, ws_sum.max_column + 1):
+            assert ws_sum.cell(row=r, column=c).data_type != "f"
+
+    assert summary_data["LIGHT"]["qty"] == 6
+    assert summary_data["OUTLET"]["qty"] == 4
+    assert summary_data["SWITCH"]["qty"] == 3
+    assert "잠정" in summary_data["LIGHT"]["status"]
+
+    # Inspect Takeoff Evidence sheet
+    ws_ev = wb["Takeoff Evidence"]
+    assert ws_ev.max_row == 14  # 1 header + 13 objects
+    for r in range(1, ws_ev.max_row + 1):
+        for c in range(1, ws_ev.max_column + 1):
+            cell = ws_ev.cell(row=r, column=c)
+            assert cell.data_type != "f"
+
+
+def test_conservative_provisional_policy_without_scope_verification(client: TestClient) -> None:
+    """Issue #9 item 4: Even if all items are REVIEWED, is_provisional remains True in P0 without scope verification."""
+    proj = client.post("/api/projects", json={"name": "보수적 잠정 정책"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "LT-DL", "item_code": "LIGHT"},
+            {"block_name": "OT-2P", "item_code": "OUTLET"},
+            {"block_name": "SW-1", "item_code": "SWITCH"},
+        ],
+    )
+
+    t = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    # Mark all evidence as REVIEWED
+    reviews_payload = [
+        {
+            "source_object_id": e["source_object_id"],
+            "inclusion_status": e["inclusion_status"],
+            "review_status": "REVIEWED",
+            "mapped_item_code": e["mapped_item_code"],
+            "reason": "전수 검수 완료",
+        }
+        for e in t["evidence"]
+    ]
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=reviews_payload,
+    )
+
+    t_reviewed = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    assert t_reviewed["unresolved_count"] == 0
+    assert all(s["review_status"] == "REVIEWED" for s in t_reviewed["summary"])
+    # Without explicit count_scope_verified, is_provisional must remain True!
+    assert t_reviewed["is_provisional"] is True
 
 

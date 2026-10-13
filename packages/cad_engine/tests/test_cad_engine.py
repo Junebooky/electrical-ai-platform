@@ -138,3 +138,76 @@ def test_fixture_against_expectation(expected_file: Path) -> None:
     for exp_text in expected_data.get("texts", []):
         all_texts = [o.text for o in drawing.objects if o.text] + [p.text for p in drawing.primitives if p.text]
         assert any(exp_text in (t or "") for t in all_texts), f"Text '{exp_text}' not found in drawing"
+
+
+def test_layer_specific_mapping_priority_and_order_invariance() -> None:
+    """Issue #9 / DEC-013: Layer-specific rule takes precedence over general rule regardless of mapping order."""
+    dxf_path = FIXTURES_DIR / "basic_devices.dxf"
+    drawing = parse_dxf(dxf_path.read_bytes(), filename=dxf_path.name)
+
+    # In basic_devices.dxf, LT-DL objects are on layer "E-LIGHT"
+    general_rule = BlockMapping(block_name="LT-DL", layer=None, item_code="GENERAL_ITEM")
+    layer_rule = BlockMapping(block_name="LT-DL", layer="E-LIGHT", item_code="LAYER_LIGHT")
+
+    # Order A: [General, Layer]
+    res_a = aggregate(drawing, [general_rule, layer_rule])
+    assert res_a.counts.get("LAYER_LIGHT") == 6
+    assert "GENERAL_ITEM" not in res_a.counts
+
+    # Order B: [Layer, General] (order inversion)
+    res_b = aggregate(drawing, [layer_rule, general_rule])
+    assert res_b.counts.get("LAYER_LIGHT") == 6
+    assert "GENERAL_ITEM" not in res_b.counts
+
+    # Ensure result A and B are identical
+    assert res_a.counts == res_b.counts
+    assert res_a.ids(Disposition.INCLUDED) == res_b.ids(Disposition.INCLUDED)
+
+
+def test_mapping_tie_collision_fails_closed_unresolved() -> None:
+    """Issue #9 / DEC-013: Multiple matching rules with equal specificity map to conflicting items -> UNRESOLVED."""
+    dxf_path = FIXTURES_DIR / "basic_devices.dxf"
+    drawing = parse_dxf(dxf_path.read_bytes(), filename=dxf_path.name)
+
+    # Two conflicting layer-specific rules for same block and layer
+    layer_rule_1 = BlockMapping(block_name="LT-DL", layer="E-LIGHT", item_code="LIGHT_TYPE_A")
+    layer_rule_2 = BlockMapping(block_name="LT-DL", layer="E-LIGHT", item_code="LIGHT_TYPE_B")
+
+    # Regardless of order, collision must produce UNRESOLVED with zero automatic count
+    res_1 = aggregate(drawing, [layer_rule_1, layer_rule_2])
+    assert len(res_1.counts) == 0
+    unresolved_1 = [o for o in res_1.objects if o.disposition == Disposition.UNRESOLVED]
+    assert len(unresolved_1) == 6
+    assert all("매핑 충돌" in o.reason for o in unresolved_1)
+
+    # Inverted order
+    res_2 = aggregate(drawing, [layer_rule_2, layer_rule_1])
+    assert res_2.counts == res_1.counts
+    assert len(res_2.ids(Disposition.UNRESOLVED)) == 6
+
+    # Two conflicting general rules for OT-2P
+    gen_rule_1 = BlockMapping(block_name="OT-2P", layer=None, item_code="OUTLET_A")
+    gen_rule_2 = BlockMapping(block_name="OT-2P", layer=None, item_code="OUTLET_B")
+    res_gen = aggregate(drawing, [gen_rule_1, gen_rule_2])
+    ot_unresolved = [o for o in res_gen.objects if o.disposition == Disposition.UNRESOLVED]
+    assert len(ot_unresolved) == 4
+    assert all("매핑 충돌" in o.reason for o in ot_unresolved)
+
+
+def test_dynamic_and_anonymous_block_blocking_dec_014() -> None:
+    """Issue #9 / DEC-014: DYNAMIC_BLOCK and ANONYMOUS_BLOCK must be blocked as UNRESOLVED."""
+    dxf_path = FIXTURES_DIR / "anonymous_and_dynamic.dxf"
+    drawing = parse_dxf(dxf_path.read_bytes(), filename=dxf_path.name)
+
+    # Map LT-DYN (which has DYNAMIC_BLOCK warning)
+    mapping = BlockMapping(block_name="LT-DYN", item_code="LIGHT")
+    res = aggregate(drawing, [mapping])
+
+    # Dynamic block must NOT be automatically counted
+    assert "LIGHT" not in res.counts
+    assert res.counts == {}
+
+    # Must be marked UNRESOLVED with specific explanation
+    dyn_unresolved = [o for o in res.objects if o.disposition == Disposition.UNRESOLVED]
+    assert len(dyn_unresolved) == 1
+    assert "동적/익명 블록: 가시성·구조 검수 필요" in dyn_unresolved[0].reason

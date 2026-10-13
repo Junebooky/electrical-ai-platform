@@ -71,6 +71,9 @@ class AggregateResult:
 _BLOCKING = {
     WarningCode.XREF_UNRESOLVED: "외부참조는 집계하지 않음",
     WarningCode.MISSING_BLOCK_DEFINITION: "블록 정의 없음",
+    WarningCode.DYNAMIC_BLOCK: "동적/익명 블록: 가시성·구조 검수 필요",
+    WarningCode.ANONYMOUS_BLOCK: "동적/익명 블록: 가시성·구조 검수 필요",
+    WarningCode.CIRCULAR_BLOCK_REFERENCE: "순환 블록 참조",
 }
 
 
@@ -84,13 +87,33 @@ def aggregate(
     for obj in drawing.objects:
         if obj.entity_type != "INSERT":
             continue
-        mapping = next((m for m in mappings if m.matches(obj)), None)
-        if mapping is None:
+
+        matching_rules = [m for m in mappings if m.matches(obj)]
+        if not matching_rules:
             if obj.depth == 0:
                 result.objects.append(
                     ObjectResult(obj.id, Disposition.UNMAPPED, None, "매핑되지 않은 블록")
                 )
             continue
+
+        # Specificity resolution (DEC-013):
+        # Layer-specific rule (layer == obj.layer) > General fallback rule (layer is None)
+        layer_specific_rules = [
+            m for m in matching_rules if m.layer is not None and m.layer == obj.layer
+        ]
+        candidates = layer_specific_rules if layer_specific_rules else matching_rules
+
+        # Tie collision detection (DEC-013):
+        # If multiple candidates at the highest specificity level map to conflicting item codes,
+        # fail-closed with UNRESOLVED rather than relying on arbitrary storage order.
+        candidate_codes = {c.item_code for c in candidates}
+        if len(candidate_codes) > 1:
+            result.objects.append(
+                ObjectResult(obj.id, Disposition.UNRESOLVED, None, "매핑 충돌: 동순위 상충")
+            )
+            continue
+
+        mapping = candidates[0]
         if mapping.item_code == EXCLUDE:
             result.objects.append(ObjectResult(obj.id, Disposition.EXCLUDED, None, "매핑에서 제외"))
             continue

@@ -87,6 +87,46 @@ function readZipEntries(buffer) {
   return entries;
 }
 
+// RFC 4180 compliant CSV parser supporting quotes, escaped quotes (""), commas and multi-lines
+function parseRfcCsv(text) {
+  const rows = [];
+  let currentRow = [];
+  let currentCell = "";
+  let insideQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === "," && !insideQuotes) {
+      currentRow.push(currentCell);
+      currentCell = "";
+    } else if ((char === "\r" || char === "\n") && !insideQuotes) {
+      if (char === "\r" && nextChar === "\n") {
+        i++;
+      }
+      currentRow.push(currentCell);
+      if (currentRow.length > 0 && !(currentRow.length === 1 && currentRow[0] === "")) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentCell = "";
+    } else {
+      currentCell += char;
+    }
+  }
+  if (currentCell || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    rows.push(currentRow);
+  }
+  return rows;
+}
+
 // Strict assertion helper (Throws on failure, never falsely passes)
 function assert(condition, message) {
   if (!condition) {
@@ -589,35 +629,38 @@ async function runE2E() {
       };
     });
 
-    // 7A: Validate CSV Summary with line/column parser
+    // 7A: Validate CSV Summary with RFC 4180 compliant CSV parser
     assert(exportUrls.csvSummary, "CSV Summary download link not found");
     const csvSumRes = await fetch(exportUrls.csvSummary);
     assertEqual(csvSumRes.status, 200, "CSV Summary export must return HTTP 200");
     const csvSumText = (await csvSumRes.text()).replace(/^\uFEFF/, "");
-    const sumLines = csvSumText.trim().split("\n").map((l) => l.split(","));
+    const sumLines = parseRfcCsv(csvSumText);
     assert(sumLines.length >= 4, "CSV Summary must have header + at least 3 data rows");
     assertEqual(sumLines[0][0], "item_code", "First header column must be item_code");
     assertEqual(sumLines[0][4], "quantity", "Fifth header column must be quantity");
     assertEqual(sumLines[0][10], "exported_at", "Exported timestamp header must be present");
+    assertEqual(sumLines[0][11], "completeness_status", "Completeness status header must be present");
+    assertEqual(sumLines[0][12], "notes", "Notes header must be present");
 
     const lightCsvRow = sumLines.find((r) => r[0] === "LIGHT");
     assert(lightCsvRow, "CSV Summary must contain LIGHT row");
     assertEqual(parseInt(lightCsvRow[4], 10), 6, "CSV Summary LIGHT quantity must be 6");
-    recordResult("CSV Summary deep parsing & exact column matches validated", "LIGHT: 6 EA, header validated");
+    assert(lightCsvRow[11].includes("잠정"), "CSV Summary LIGHT completeness_status must indicate provisional takeoff");
+    recordResult("CSV Summary RFC 4180 parsing & provisional status validated", "LIGHT: 6 EA, completeness_status asserted");
 
-    // 7B: Validate CSV Evidence & Formula Injection Defense
+    // 7B: Validate CSV Evidence & Formula Injection Defense with RFC parser
     assert(exportUrls.csvEvidence, "CSV Evidence download link not found");
     const csvEvRes = await fetch(exportUrls.csvEvidence);
     assertEqual(csvEvRes.status, 200, "CSV Evidence export must return HTTP 200");
     const csvEvText = (await csvEvRes.text()).replace(/^\uFEFF/, "");
-    const evLines = csvEvText.trim().split("\n");
+    const evLines = parseRfcCsv(csvEvText);
     assertEqual(evLines.length, 14, "CSV Evidence must contain header + exactly 13 evidence rows");
     // Assert formula injection is sanitized with leading single quote: '=cmd|...
     assert(
       csvEvText.includes("''=cmd|' /C calc'!A0") || csvEvText.includes("'=cmd"),
       "Formula injection string must be sanitized against CSV execution"
     );
-    recordResult("CSV Evidence row-by-row parsing & Formula Injection Defense (#7) validated");
+    recordResult("CSV Evidence RFC 4180 parsing & Formula Injection Defense (#7) validated");
 
     // 7C: Validate Excel XLSX 2-sheet structure & ZERO formula cells
     assert(exportUrls.xlsx, "Excel download link not found");

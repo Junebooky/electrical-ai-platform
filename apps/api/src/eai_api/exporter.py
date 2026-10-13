@@ -47,10 +47,21 @@ def export_csv_summary(result: TakeoffResult) -> bytes:
         "drawing_name",
         "drawing_revision",
         "exported_at",
+        "completeness_status",
         "notes",
     ])
     exported_at_str = result.exported_at.isoformat()
+    comp_status = (
+        f"잠정 (미해결 {result.unresolved_count}건)"
+        if result.is_provisional
+        else "확정 (검수 완료)"
+    )
     for row in result.summary:
+        notes_val = (
+            row.notes
+            if row.notes
+            else (f"잠정 산출표 (미해결 {result.unresolved_count}건 - 도면 범위 미검증)" if result.is_provisional else "")
+        )
         writer.writerow([
             sanitize_cell(row.item_code),
             sanitize_cell(row.item_name),
@@ -63,7 +74,8 @@ def export_csv_summary(result: TakeoffResult) -> bytes:
             sanitize_cell(row.drawing_name),
             sanitize_cell(row.drawing_revision),
             sanitize_cell(exported_at_str),
-            sanitize_cell(row.notes),
+            sanitize_cell(comp_status),
+            sanitize_cell(notes_val),
         ])
     return buf.getvalue().encode("utf-8-sig")
 
@@ -137,6 +149,7 @@ def export_xlsx(result: TakeoffResult) -> bytes:
         "도면명 (drawing_name)",
         "REV",
         "내보내기 시각 (exported_at)",
+        "산출 상태 (completeness_status)",
         "비고 (notes)",
     ]
     ws_sum.append(summary_headers)
@@ -147,8 +160,18 @@ def export_xlsx(result: TakeoffResult) -> bytes:
         cell.alignment = align_center
 
     exported_at_str = result.exported_at.isoformat()
+    comp_status = (
+        f"잠정 / 검수 진행 중 (미해결 {result.unresolved_count}건)"
+        if result.is_provisional
+        else "확정 (검수 완료)"
+    )
 
     for r in result.summary:
+        notes_val = (
+            r.notes
+            if r.notes
+            else (f"잠정 산출표 (미해결 {result.unresolved_count}건 - 도면 범위 미검증)" if result.is_provisional else "")
+        )
         ws_sum.append([
             sanitize_cell(r.item_code),
             sanitize_cell(r.item_name),
@@ -161,7 +184,8 @@ def export_xlsx(result: TakeoffResult) -> bytes:
             sanitize_cell(r.drawing_name),
             sanitize_cell(r.drawing_revision),
             sanitize_cell(exported_at_str),
-            sanitize_cell(r.notes),
+            sanitize_cell(comp_status),
+            sanitize_cell(notes_val),
         ])
         curr_row = ws_sum.max_row
         for col_num in range(1, len(summary_headers) + 1):
@@ -169,7 +193,7 @@ def export_xlsx(result: TakeoffResult) -> bytes:
             c.font = data_font
             if isinstance(c.value, str) and c.value.startswith("'"):
                 c.data_type = "s"
-            if col_num in (4, 6, 7, 10, 11):
+            if col_num in (4, 6, 7, 10, 11, 12):
                 c.alignment = align_center
             elif col_num == 5:
                 c.alignment = align_right
