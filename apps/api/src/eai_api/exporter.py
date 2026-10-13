@@ -17,9 +17,12 @@ def sanitize_cell(value: object) -> object:
     If a text cell starts with '=', '+', '-', '@', '\\t', or '\\r', prefix with
     a single quote so spreadsheets treat it strictly as a string literal.
     """
-    if isinstance(value, str) and value:
-        if value[0] in ("=", "+", "-", "@", "\t", "\r"):
-            return f"'{value}"
+    if (
+        isinstance(value, str)
+        and value
+        and value[0] in ("=", "+", "-", "@", "\t", "\r")
+    ):
+        return f"'{value}"
     return value
 
 
