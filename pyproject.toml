@@ -1,0 +1,63 @@
+# Virtual uv workspace root for the Python side of the monorepo.
+# Members:
+#   packages/cad_engine  - pure, framework-free DXF parsing / normalization library
+#   apps/api             - FastAPI service exposing cad_engine to the web UI (local only)
+[tool.uv.workspace]
+members = ["packages/cad_engine", "apps/api"]
+
+[tool.uv.sources]
+eai-cad-engine = { workspace = true }
+eai-api = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "eai-cad-engine",
+    "eai-api",
+    "pytest>=8.3",
+    "httpx>=0.28",
+    "ruff>=0.12",
+    "mypy>=1.17",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["apps/web"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "RUF001", # Korean user-facing strings contain ambiguous-looking unicode by design
+    "RUF002",
+    "RUF003",
+    "E501", # Line length handled gracefully by formatter
+    "B008", # FastAPI Depends/File/Query defaults
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+files = ["packages/cad_engine/src", "apps/api/src"]
+
+[[tool.mypy.overrides]]
+module = ["ezdxf", "ezdxf.*", "openpyxl", "openpyxl.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "eai_api.exporter",
+    "cad_engine.testing.synthetic",
+    "cad_engine.loader",
+]
+disallow_untyped_calls = false
+disable_error_code = ["attr-defined", "no-untyped-call", "unused-ignore"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["packages/cad_engine/src", "apps/api/src"]
+testpaths = ["packages/cad_engine/tests", "apps/api/tests"]

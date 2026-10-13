@@ -1,0 +1,19 @@
+{
+  "filename": "truncated.dxf",
+  "description": "정상 파일의 앞 40%만 남긴 손상 파일 → 잘림 오류(빈 도면으로 오인 금지)",
+  "expect_error": "TRUNCATED_FILE",
+  "insunits": null,
+  "encoding": null,
+  "top_level_inserts": {},
+  "nested_inserts": {},
+  "warnings": [],
+  "absent_warnings": [],
+  "mappings": [],
+  "expected_counts": {},
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

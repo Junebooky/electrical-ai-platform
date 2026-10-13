@@ -1,0 +1,35 @@
+{
+  "description": "MINSERT 2x3 배열 → 콘센트 6개로 전개",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "OT-2P": 6
+  },
+  "nested_inserts": {},
+  "warnings": [
+    "MINSERT_EXPANDED"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "OT-2P",
+      "item_code": "OUTLET"
+    }
+  ],
+  "expected_counts": {
+    "OUTLET": 6
+  },
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [
+    {
+      "block": "OT-2P",
+      "x": 1000,
+      "y": 1000
+    }
+  ],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

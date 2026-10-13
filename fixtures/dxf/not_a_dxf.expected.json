@@ -1,0 +1,19 @@
+{
+  "filename": "not_a_dxf.dxf",
+  "description": "DXF가 아닌 텍스트",
+  "expect_error": "NOT_A_DXF",
+  "insunits": null,
+  "encoding": null,
+  "top_level_inserts": {},
+  "nested_inserts": {},
+  "warnings": [],
+  "absent_warnings": [],
+  "mappings": [],
+  "expected_counts": {},
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}
