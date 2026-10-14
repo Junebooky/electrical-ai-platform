@@ -30,11 +30,15 @@
 > **"DXF 구조가 손상되어 읽을 수 없습니다. 이 DXF는 AutoCAD R12(AC1009)로 선언되어 있으나, 상위 버전 전용 객체인 경량 폴리라인(LWPOLYLINE)이 하위 클래스 식별자(AcDbPolyline) 없이 비표준 구조로 포함되어 있습니다. CAD 프로그램(AutoCAD 등)에서 도면을 'AutoCAD 2000 DXF(AC1015)' 이상 표준 규격으로 다시 저장(Save As)한 뒤 업로드해 주세요."**
 
 ### 2.2 진단 화면 증거
-![16_r12_malformed_diagnostic_banner](docs/screenshots/16_r12_malformed_diagnostic_banner.png)
+> *참고: 본 증거 화면은 A02 로컬 Chrome 환경에서 E2E 스크립트(`e2e_r12_runner.mjs`)를 통해 실측 캡처되었습니다 (CI 헤드리스 환경이 아닌 실제 브라우저 렌더링 검증).*
+
+![16_r12_malformed_diagnostic_banner](screenshots/16_r12_malformed_diagnostic_banner.png)
 
 ---
 
 ## 3. 사용자 CAD 재저장(Save As) 가이드
+
+본 PR #16은 사용자의 원본 파일을 임의로 침묵 변환(silent normalization)하지 않고, 파일 구조의 손상 없이 CAD 프로그램의 네이티브 표준 변환 기능을 활용하도록 안내하는 **행동 지침(Actionable Guidance)**을 제공합니다.
 
 사용자는 사용 중인 CAD 프로그램에서 30초 이내에 표준 규격으로 도면을 다시 저장하여 즉시 정상 업로드할 수 있습니다.
 
@@ -65,12 +69,13 @@
 - 단선도나 기구 기호가 단순 선/원으로 그려진 도면은 사용자가 화면을 보며 **[누락 기구 수동 추가]** 모드로 정확한 위치에 수동 마커(EA)를 등록하여 안전하게 적산표를 산출합니다.
 
 ### 4.3 블록 없는 도면 뷰어 증거
-![17_schematic_entities_no_insert_empty_state](docs/screenshots/17_schematic_entities_no_insert_empty_state.png)
+![17_schematic_entities_no_insert_empty_state](screenshots/17_schematic_entities_no_insert_empty_state.png)
 
 ---
 
-## 5. 비파괴 DXF 정규화(Normalization) 후속 제안
+## 5. 비파괴 DXF 정규화(Normalization) 후속 제안 (PR 범위 외)
 
+PR #16의 범위는 진단 및 Save-As 가이드이며, 자동 복구는 원본 무결성을 침해하지 않도록 향후 제안으로 관리합니다.
 현재 시스템은 사용자 원본 파일의 무결성을 존중하며 임의의 침묵 수정(silent modification)을 수행하지 않습니다. 향후 비표준 도면을 플랫폼 차원에서 구제하기 위한 안전 원칙은 다음과 같습니다:
 
 1. **원본 Raw 보존 (불변 원칙):**

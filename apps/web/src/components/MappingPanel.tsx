@@ -24,11 +24,10 @@ export function MappingPanel({
   onSaveMappings,
   isSaving,
 }: MappingPanelProps) {
-  // Filter out system dimension blocks with 0 inserts if user blocks exist or if 0 inserts
+  // Only blocks that have actual physical installations (top-level or nested inserts > 0) can be counted.
+  // Unused block definitions in DXF BLOCKS section must not be displayed for automatic mapping (PR #16 / Issue #15).
   const availableBlocks = useMemo(() => {
-    const withInserts = blocks.filter((b) => b.top_level_insert_count > 0 || b.nested_insert_count > 0);
-    if (withInserts.length > 0) return withInserts;
-    return blocks.filter((b) => !b.name.startsWith("_") && !b.name.startsWith("*"));
+    return blocks.filter((b) => b.top_level_insert_count > 0 || b.nested_insert_count > 0);
   }, [blocks]);
 
   // Local state for mappings editing
