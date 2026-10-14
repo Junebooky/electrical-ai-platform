@@ -65,7 +65,18 @@ def create_png(width: int, height: int, pixels: bytearray) -> bytes:
     return signature + ihdr_chunk + idat_chunk + iend_chunk
 
 
-def draw_rect(pixels: bytearray, w: int, h: int, x1: int, y1: int, x2: int, y2: int, color: tuple[int, int, int, int], fill: bool = True, border_width: int = 1):
+def draw_rect(
+    pixels: bytearray,
+    w: int,
+    h: int,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    color: tuple[int, int, int, int],
+    fill: bool = True,
+    border_width: int = 1,
+) -> None:
     x1, x2 = max(0, min(x1, x2)), min(w - 1, max(x1, x2))
     y1, y2 = max(0, min(y1, y2)), min(h - 1, max(y1, y2))
     for y in range(y1, y2 + 1):
@@ -76,19 +87,38 @@ def draw_rect(pixels: bytearray, w: int, h: int, x1: int, y1: int, x2: int, y2: 
                 pixels[idx : idx + 4] = bytes(color)
 
 
-def draw_circle(pixels: bytearray, w: int, h: int, cx: int, cy: int, r: int, color: tuple[int, int, int, int], fill: bool = True, border_width: int = 2):
+def draw_circle(
+    pixels: bytearray,
+    w: int,
+    h: int,
+    cx: int,
+    cy: int,
+    r: int,
+    color: tuple[int, int, int, int],
+    fill: bool = True,
+    border_width: int = 2,
+) -> None:
     r_sq = r * r
     inner_sq = max(0, (r - border_width)) ** 2
     for y in range(max(0, cy - r), min(h, cy + r + 1)):
         for x in range(max(0, cx - r), min(w, cx + r + 1)):
             d_sq = (x - cx) ** 2 + (y - cy) ** 2
-            if d_sq <= r_sq:
-                if fill or (d_sq >= inner_sq):
-                    idx = (y * w + x) * 4
-                    pixels[idx : idx + 4] = bytes(color)
+            if d_sq <= r_sq and (fill or (d_sq >= inner_sq)):
+                idx = (y * w + x) * 4
+                pixels[idx : idx + 4] = bytes(color)
 
 
-def draw_line(pixels: bytearray, w: int, h: int, x1: int, y1: int, x2: int, y2: int, color: tuple[int, int, int, int], width: int = 2):
+def draw_line(
+    pixels: bytearray,
+    w: int,
+    h: int,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    color: tuple[int, int, int, int],
+    width: int = 2,
+) -> None:
     dx = abs(x2 - x1)
     dy = abs(y2 - y1)
     sx = 1 if x1 < x2 else -1
@@ -150,7 +180,7 @@ def generate_electrical_floorplan() -> bytes:
     return create_png(W, H, pixels)
 
 
-def main():
+def main() -> None:
     png_bytes = generate_electrical_floorplan()
     out_path = Path("fixtures/images/floorplan_sample.png")
     out_path.parent.mkdir(parents=True, exist_ok=True)
