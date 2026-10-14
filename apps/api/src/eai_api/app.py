@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import os
 import urllib.parse
+import uuid
 from typing import Any, Literal
 
 from cad_engine import DxfLoadError, parse_dxf
@@ -13,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from .exporter import export_csv_evidence, export_csv_summary, export_xlsx
+from .image_parser import build_image_drawing, inspect_image
 from .models import (
     DrawingSummary,
     EvidenceReviewItem,
@@ -126,22 +129,76 @@ async def upload_drawing(
         raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
 
     filename = file.filename or "drawing.dxf"
+    lower_name = filename.lower()
     content = await read_upload_file_bounded(file)
 
-    # Deterministic normalization
-    drawing = parse_dxf(content, filename=filename)
-    storage.save_drawing(project_id, drawing, revision=revision, raw_bytes=content)
+    if lower_name.endswith(".dxf"):
+        # Deterministic normalization for DXF
+        drawing = parse_dxf(content, filename=filename)
+        storage.save_drawing(
+            project_id,
+            drawing,
+            revision=revision,
+            raw_bytes=content,
+            source_type="DXF",
+            file_type="DXF",
+            coordinate_space="WORLD",
+        )
+        return {
+            "project_id": project_id,
+            "drawing_id": drawing.drawing_id,
+            "filename": filename,
+            "revision": revision,
+            "objects_count": len(drawing.objects),
+            "warnings_count": len(drawing.warnings),
+            "raw_saved": True,
+            "file_size_bytes": len(content),
+            "source_type": "DXF",
+            "file_type": "DXF",
+            "coordinate_space": "WORLD",
+        }
+    elif lower_name.endswith((".png", ".jpg", ".jpeg")):
+        try:
+            img_meta = inspect_image(content, filename=filename)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
-    return {
-        "project_id": project_id,
-        "drawing_id": drawing.drawing_id,
-        "filename": filename,
-        "revision": revision,
-        "objects_count": len(drawing.objects),
-        "warnings_count": len(drawing.warnings),
-        "raw_saved": True,
-        "file_size_bytes": len(content),
-    }
+        drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
+        drawing = build_image_drawing(img_meta, drawing_id)
+        storage.save_drawing(
+            project_id,
+            drawing,
+            revision=revision,
+            raw_bytes=content,
+            source_type="IMAGE",
+            file_type=img_meta.file_type,
+            coordinate_space="IMAGE_PIXEL",
+            dimensions={"width": img_meta.width, "height": img_meta.height},
+        )
+        return {
+            "project_id": project_id,
+            "drawing_id": drawing.drawing_id,
+            "filename": filename,
+            "revision": revision,
+            "objects_count": 0,
+            "warnings_count": len(drawing.warnings),
+            "raw_saved": True,
+            "file_size_bytes": len(content),
+            "source_type": "IMAGE",
+            "file_type": img_meta.file_type,
+            "coordinate_space": "IMAGE_PIXEL",
+            "dimensions": {"width": img_meta.width, "height": img_meta.height},
+        }
+    elif lower_name.endswith(".dwg"):
+        raise HTTPException(
+            status_code=400,
+            detail="DWG 직접 업로드는 지원하지 않습니다. DXF 또는 PNG/JPG/PDF 형식으로 변환 후 업로드하세요 (DEC-001/PRD FR-002).",
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="지원하지 않는 파일 형식입니다. .dxf, .png, .jpg 파일만 지원됩니다.",
+        )
 
 
 @app.get("/api/projects/{project_id}/drawings", response_model=list[DrawingSummary])
@@ -160,17 +217,37 @@ def get_drawing(project_id: str, drawing_id: str) -> NormalizedDrawing:
     return drawing
 
 
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/image")
+def get_drawing_image(project_id: str, drawing_id: str) -> Response:
+    image_path = storage.get_drawing_image_path(project_id, drawing_id)
+    if not image_path or not image_path.exists():
+        raise HTTPException(status_code=404, detail="이미지 도면 파일을 찾을 수 없습니다.")
+    meta = storage.get_drawing_meta(project_id, drawing_id)
+    file_type = (meta.get("file_type") if meta else "PNG") or "PNG"
+    media_type = "image/png" if file_type.upper() == "PNG" else "image/jpeg"
+    return Response(
+        content=image_path.read_bytes(),
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @app.get("/api/projects/{project_id}/drawings/{drawing_id}/raw")
 def get_raw_drawing(project_id: str, drawing_id: str) -> Response:
     raw_path = storage.get_raw_drawing_path(project_id, drawing_id)
     if not raw_path or not raw_path.exists():
-        raise HTTPException(status_code=404, detail="원본 DXF 파일을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="원본 도면 파일을 찾을 수 없습니다.")
     meta = storage.get_drawing_meta(project_id, drawing_id)
-    filename = (meta.get("filename") if meta else None) or "drawing.dxf"
+    filename = (meta.get("filename") if meta else None) or raw_path.name
     encoded_filename = urllib.parse.quote(filename)
+    media_type = "application/dxf"
+    if raw_path.suffix.lower() == ".png":
+        media_type = "image/png"
+    elif raw_path.suffix.lower() in (".jpg", ".jpeg"):
+        media_type = "image/jpeg"
     return Response(
         content=raw_path.read_bytes(),
-        media_type="application/dxf",
+        media_type=media_type,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
         },
@@ -192,6 +269,18 @@ def save_mappings(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    # IMG-03: On IMAGE drawings, all mapping units must be strictly 'EA'
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    if is_image:
+        for r in mappings:
+            actual_u = (r.unit or "EA").strip()
+            if actual_u != "EA":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미지 도면(IMAGE_PIXEL)의 매핑 단위는 P0 원칙(IMG-03/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
+                )
+
     try:
         storage.save_mappings(project_id, drawing_id, mappings)
     except ValueError as e:
@@ -210,17 +299,25 @@ def save_reviews(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
     mappings = storage.get_mappings(project_id, drawing_id)
     canon_defs = {m.item_code: m for m in mappings if m.item_code not in ("EXCLUDE", "UNMAPPED")}
     manual_objs = {mo.id: mo for mo in storage.get_manual_objects(project_id, drawing_id)}
     cad_objs = {obj.id: obj for obj in drawing.objects if obj.entity_type == "INSERT"}
 
-    # MUNIT-D: Validate unit consistency on review reclassification
+    # MUNIT-D / IMG-03: Validate unit consistency on review reclassification
     for r in reviews:
         if not r.mapped_item_code or r.mapped_item_code in ("EXCLUDE", "UNMAPPED"):
             continue
 
         target_unit = (canon_defs[r.mapped_item_code].unit or "EA").strip() if r.mapped_item_code in canon_defs else "EA"
+
+        # IMG-03: On IMAGE drawings, review reclassification to non-EA is strictly forbidden
+        if is_image and target_unit != "EA":
+            raise HTTPException(
+                status_code=400,
+                detail=f"이미지 도면(IMAGE_PIXEL)의 검수 재분류 단위는 P0 원칙(IMG-03)상 'EA'만 허용됩니다 (대상 단위: '{target_unit}').",
+            )
 
         if r.source_object_id in manual_objs:
             mo = manual_objs[r.source_object_id]
@@ -268,12 +365,51 @@ def add_manual_object(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
+    # Traceability boundary: Ensure drawing_id in payload matches URL path parameter
+    if item.drawing_id and item.drawing_id != drawing_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"요청 본문의 drawing_id('{item.drawing_id}')가 URL 경로의 drawing_id('{drawing_id}')와 일치하지 않습니다.",
+        )
+
+    # High-2 Defense: Strict coordinate bounds for IMAGE drawings [0, width) and [0, height)
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    if is_image:
+        dims = getattr(drawing, "dimensions", None) or {}
+        img_w = float(dims.get("width") or (drawing.extents.max[0] if drawing.extents else 0))
+        img_h = float(dims.get("height") or (drawing.extents.max[1] if drawing.extents else 0))
+        if not (math.isfinite(item.x) and math.isfinite(item.y)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"수동 추가 좌표가 유효한 유한수(finite number)가 아닙니다 (x={item.x}, y={item.y}).",
+            )
+        # Pixel indices must be strictly within half-open interval [0, width) and [0, height)
+        if item.x < 0.0 or item.x >= img_w or item.y < 0.0 or item.y >= img_h:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"수동 추가 기구 좌표(x={item.x}, y={item.y})가 "
+                    f"이미지 도면의 픽셀 유효 범위(가로 0~{int(img_w) - 1}, 세로 0~{int(img_h) - 1})를 벗어났습니다. "
+                    f"반열림 구간 [0, {int(img_w)}) × [0, {int(img_h)}) 내의 좌표만 허용됩니다."
+                ),
+            )
+
     # ADR-005 / MUNIT-E: Validate non-empty unit
     actual_unit = (item.unit or "").strip()
     if not actual_unit:
         raise HTTPException(
             status_code=400,
             detail="수동 추가 기구의 단위(unit)가 누락되었거나 공백입니다. 유효한 단위(예: 'EA', 'SET' 등)를 지정해야 합니다 (ADR-005).",
+        )
+
+    # IMG-03: On IMAGE drawings, manual objects MUST strictly have unit == "EA" (mapping-bypass prohibited)
+    if is_image and actual_unit != "EA":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"이미지 도면(IMAGE_PIXEL)의 수동 추가 기구는 P0 원칙(IMG-03/M-UNIT-01)상 'EA' 단위만 허용됩니다 "
+                f"(품목: '{item.item_code}', 요청 단위: '{item.unit}')."
+            ),
         )
 
     mappings = storage.get_mappings(project_id, drawing_id)

@@ -182,3 +182,7 @@ class NormalizedDrawing(_Model):
     primitives: list[Primitive]
     warnings: list[DrawingWarning]
     stats: ParseStats
+    source_type: str = "DXF"
+    file_type: str = "DXF"
+    coordinate_space: str = "WORLD"
+    dimensions: dict[str, int] | None = None

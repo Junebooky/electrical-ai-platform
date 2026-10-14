@@ -159,4 +159,12 @@ export const api = {
   getXlsxExportUrl: (projectId: string, drawingId: string): string => {
     return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/export/xlsx`;
   },
+
+  getImageUrl: (projectId: string, drawingId: string): string => {
+    return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/image`;
+  },
+
+  getRawUrl: (projectId: string, drawingId: string): string => {
+    return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/raw`;
+  },
 };

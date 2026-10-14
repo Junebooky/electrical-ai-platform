@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class InclusionStatus(StrEnum):
@@ -59,6 +60,14 @@ class ManualObjectItem(BaseModel):
     unit: str = "EA"
     note: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("x", "y")
+    @classmethod
+    def validate_finite_coords(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("좌표값은 유한한 실수(finite float)여야 하며 NaN이나 무한대(Inf)일 수 없습니다.")
+        return v
+
 
 
 class TakeoffSummaryRow(BaseModel):
@@ -126,3 +135,7 @@ class DrawingSummary(BaseModel):
     created_at: datetime
     objects_count: int
     warnings_count: int
+    source_type: str = "DXF"
+    file_type: str = "DXF"
+    coordinate_space: str = "WORLD"
+    dimensions: dict[str, int] | None = None
