@@ -1024,4 +1024,143 @@ def test_adr_005_api_mapping_validation_and_canonical_item_contract(client: Test
     assert int(xlsx_res.headers["X-Takeoff-Unresolved-Count"]) > 0
 
 
+def test_manual_item_canonical_unit_integrity_adr_005(client: TestClient) -> None:
+    """Issue #9 A01: Manual object canonical unit integrity, manual-only SET output, and conflict defenses."""
+    proj = client.post("/api/projects", json={"name": "수동 기구 단위 정합성 검증"}).json()
+    project_id = proj["id"]
+
+    dxf_file = FIXTURES_DIR / "basic_devices.dxf"
+    upload_res = client.post(
+        f"/api/projects/{project_id}/drawings",
+        files={"file": (dxf_file.name, dxf_file.read_bytes(), "application/octet-stream")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # 1. (e) Empty unit rejection in mappings
+    empty_map_res = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[{"block_name": "LT-DL", "item_code": "LIGHT", "unit": ""}],
+    )
+    assert empty_map_res.status_code == 400
+    assert "단위(unit)가 누락되었거나 공백입니다" in empty_map_res.json()["detail"]
+
+    # 2. (e) Empty unit rejection in manual objects
+    empty_mo_res = client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "mo_empty",
+            "drawing_id": drawing_id,
+            "item_code": "CUSTOM",
+            "unit": "   ",
+            "x": 0.0,
+            "y": 0.0,
+        },
+    )
+    assert empty_mo_res.status_code == 400
+    assert "단위(unit)가 누락되었거나 공백입니다" in empty_mo_res.json()["detail"]
+
+    # 3. (a) Manual-only SET item: 1 item MUST output unit='SET' (NEVER 'EA') in Takeoff, CSV, and XLSX
+    mo_set1 = client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "mo_panel_1",
+            "drawing_id": drawing_id,
+            "item_code": "CUSTOM_PANEL",
+            "item_name": "주 분전반 세트",
+            "unit": "SET",
+            "x": 500.0,
+            "y": 500.0,
+            "note": "현장 추가 분전반",
+        },
+    )
+    assert mo_set1.status_code == 200
+
+    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    panel_row = next(r for r in t1["summary"] if r["item_code"] == "CUSTOM_PANEL")
+    assert panel_row["quantity"] == 1
+    assert panel_row["unit"] == "SET", "Manual-only item must output its actual canonical unit (SET), not hardcoded EA"
+    assert panel_row["quantity_method"] == "MANUAL"
+
+    # CSV Summary verification
+    csv_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=summary")
+    csv_text = csv_res.content.decode("utf-8-sig")
+    assert "CUSTOM_PANEL" in csv_text
+    assert ",SET,1,MANUAL," in csv_text or ",SET,1," in csv_text
+
+    # XLSX Summary verification
+    xlsx_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx")
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_res.content))
+    ws_sum = wb["Takeoff Summary"]
+    found_panel_row = False
+    for r in range(2, ws_sum.max_row + 1):
+        if ws_sum.cell(row=r, column=1).value == "CUSTOM_PANEL":
+            assert ws_sum.cell(row=r, column=4).value == "SET", "XLSX unit column must be SET"
+            assert ws_sum.cell(row=r, column=5).value == 1
+            found_panel_row = True
+    assert found_panel_row is True
+
+    # 4. (b) Defense against mixing EA/SET on the same manual item code via API
+    mo_set_bad = client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "mo_panel_2_bad",
+            "drawing_id": drawing_id,
+            "item_code": "CUSTOM_PANEL",
+            "item_name": "주 분전반 세트",
+            "unit": "EA",  # Collides with existing SET!
+            "x": 600.0,
+            "y": 600.0,
+        },
+    )
+    assert mo_set_bad.status_code == 400
+    assert "기존 등록된 수동 기구의 정규 단위('SET')와 상충합니다" in mo_set_bad.json()["detail"]
+
+    # 5. (b) Defense against legacy tampered storage mixing EA/SET for manual items
+    from eai_api.app import storage
+    drawings_dir = storage.projects_dir / project_id / "drawings" / drawing_id
+    tampered_manual = [
+        {"id": "man_1", "drawing_id": drawing_id, "item_code": "CONF_MAN", "unit": "SET", "x": 10.0, "y": 10.0},
+        {"id": "man_2", "drawing_id": drawing_id, "item_code": "CONF_MAN", "unit": "EA", "x": 20.0, "y": 20.0},
+    ]
+    (drawings_dir / "manual_objects.json").write_text(json.dumps(tampered_manual), encoding="utf-8")
+
+    t_tampered = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    conf_man_row = next(r for r in t_tampered["summary"] if r["item_code"] == "CONF_MAN")
+    assert conf_man_row["quantity"] == 0, "Conflicting units on manual item MUST NOT be summed"
+    assert conf_man_row["review_status"] == "UNRESOLVED"
+    assert "품목 정의 충돌" in conf_man_row["notes"]
+    assert conf_man_row["unit"] == "[상충 단위 충돌]"
+
+    # 6. (c) Valid manual object addition for mapped SET items
+    # Clean manual objects and set mapping with SET
+    (drawings_dir / "manual_objects.json").write_text("[]", encoding="utf-8")
+    client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {"block_name": "OT-2P", "item_code": "OUTLET_SET", "unit": "SET", "specification": "매입 2구 콘센트 세트"},
+        ],
+    )
+    mo_valid_set = client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "mo_outlet_set_1",
+            "drawing_id": drawing_id,
+            "item_code": "OUTLET_SET",
+            "unit": "SET",
+            "x": 300.0,
+            "y": 300.0,
+            "note": "누락 콘센트 세트 추가",
+        },
+    )
+    assert mo_valid_set.status_code == 200
+
+    t_mixed_set = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    outlet_set_row = next(r for r in t_mixed_set["summary"] if r["item_code"] == "OUTLET_SET")
+    # basic_devices.dxf has 4 OT-2P blocks + 1 manual = 5 SET!
+    assert outlet_set_row["quantity"] == 5
+    assert outlet_set_row["unit"] == "SET"
+    assert outlet_set_row["quantity_method"] == "MIXED"
+
+
+
 

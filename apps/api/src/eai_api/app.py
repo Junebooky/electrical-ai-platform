@@ -225,11 +225,21 @@ def add_manual_object(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    # ADR-005: Validate non-empty unit
+    actual_unit = (item.unit or "").strip()
+    if not actual_unit:
+        raise HTTPException(
+            status_code=400,
+            detail="수동 추가 기구의 단위(unit)가 누락되었거나 공백입니다. 유효한 단위(예: 'EA', 'SET' 등)를 지정해야 합니다 (ADR-005).",
+        )
+
     mappings = storage.get_mappings(project_id, drawing_id)
     canon_defs = {m.item_code: m for m in mappings if m.item_code not in ("EXCLUDE", "UNMAPPED")}
+    objs = storage.get_manual_objects(project_id, drawing_id)
+
     if item.item_code in canon_defs:
         expected_unit = (canon_defs[item.item_code].unit or "EA").strip()
-        actual_unit = (item.unit or "EA").strip()
         if expected_unit != actual_unit:
             raise HTTPException(
                 status_code=400,
@@ -238,7 +248,20 @@ def add_manual_object(
                     f"일치하지 않습니다 (ADR-005)."
                 ),
             )
-    objs = storage.get_manual_objects(project_id, drawing_id)
+    else:
+        # ADR-005: For manual-only items, enforce consistent unit across manual instances
+        same_code_manual = [o for o in objs if o.item_code == item.item_code and (o.unit or "").strip()]
+        if same_code_manual:
+            expected_unit = (same_code_manual[0].unit or "EA").strip()
+            if expected_unit != actual_unit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"수동 추가 기구의 단위('{item.unit}')가 기존 등록된 수동 기구의 정규 단위('{expected_unit}')와 "
+                        f"상충합니다 (ADR-005)."
+                    ),
+                )
+
     objs.append(item)
     storage.save_manual_objects(project_id, drawing_id, objs)
     return item

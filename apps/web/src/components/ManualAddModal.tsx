@@ -7,10 +7,10 @@ interface ManualAddModalProps {
   isOpen: boolean;
   coords: { x: number; y: number } | null;
   drawingName: string;
-  availableItems: { code: string; name: string }[];
+  availableItems: { code: string; name: string; unit?: string }[];
   isSaving: boolean;
   onClose: () => void;
-  onConfirm: (itemCode: string, reason: string, note: string) => Promise<void>;
+  onConfirm: (itemCode: string, reason: string, note: string, unit?: string) => Promise<void>;
 }
 
 function ManualAddModalInner({
@@ -23,15 +23,16 @@ function ManualAddModalInner({
 }: {
   coords: { x: number; y: number };
   drawingName: string;
-  availableItems: { code: string; name: string }[];
+  availableItems: { code: string; name: string; unit?: string }[];
   isSaving: boolean;
   onClose: () => void;
-  onConfirm: (itemCode: string, reason: string, note: string) => Promise<void>;
+  onConfirm: (itemCode: string, reason: string, note: string, unit?: string) => Promise<void>;
 }) {
   const [itemCode, setItemCode] = useState<string>("");
   const [reason, setReason] = useState<string>("");
   const [note, setNote] = useState<string>("");
   const [customItemCode, setCustomItemCode] = useState<string>("");
+  const [customUnit, setCustomUnit] = useState<string>("EA");
   const [isCustomItem, setIsCustomItem] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
@@ -55,7 +56,9 @@ function ManualAddModalInner({
     e.preventDefault();
     setSubmitAttempted(true);
     if (!isValid || isSaving) return;
-    await onConfirm(effectiveItemCode, reason, note.trim());
+    const selected = availableItems.find((i) => i.code === effectiveItemCode);
+    const unit = isCustomItem ? (customUnit.trim() || "EA") : (selected?.unit || "EA");
+    await onConfirm(effectiveItemCode, reason, note.trim(), unit);
   };
 
   return (
@@ -132,7 +135,7 @@ function ManualAddModalInner({
                 <option value="">품목을 선택해 주세요 (필수)</option>
                 {availableItems.map((item) => (
                   <option key={item.code} value={item.code}>
-                    {item.code} — {item.name}
+                    {item.code} — {item.name} ({item.unit || "EA"})
                   </option>
                 ))}
                 <option value="__CUSTOM__">+ 직접 품목코드 입력</option>
@@ -146,17 +149,31 @@ function ManualAddModalInner({
                   onChange={(e) => setCustomItemCode(e.target.value)}
                   className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
                 />
+                <input
+                  type="text"
+                  placeholder="단위 (기본: EA)"
+                  value={customUnit}
+                  onChange={(e) => setCustomUnit(e.target.value)}
+                  className="w-24 px-3 py-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  title="산출 단위"
+                />
                 <button
                   type="button"
                   onClick={() => {
                     setIsCustomItem(false);
                     setCustomItemCode("");
+                    setCustomUnit("EA");
                   }}
                   className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
                 >
                   목록 선택
                 </button>
               </div>
+            )}
+            {!isCustomItem && itemCode && (
+              <p className="text-[11px] text-slate-400 mt-1">
+                산출 단위: <span className="text-amber-400 font-semibold">{availableItems.find((i) => i.code === itemCode)?.unit || "EA"}</span> (도면 정규 단위)
+              </p>
             )}
             {submitAttempted && !isItemValid && (
               <p className="text-[11px] text-rose-400 flex items-center gap-1">

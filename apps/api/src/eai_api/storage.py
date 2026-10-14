@@ -273,7 +273,16 @@ def find_canonical_item_conflicts(
 
 def validate_canonical_mappings(mapping_rules: list[ItemMappingRule]) -> None:
     """Validate that mappings do not violate ADR-005 canonical item contract.
-    Raises ValueError with descriptive detail if conflicting definitions exist."""
+    Raises ValueError with descriptive detail if conflicting definitions exist or unit is empty."""
+    for r in mapping_rules:
+        if r.item_code in ("EXCLUDE", "UNMAPPED"):
+            continue
+        if not (r.unit or "").strip():
+            raise ValueError(
+                f"품목 '{r.item_code}'의 단위(unit)가 누락되었거나 공백입니다. "
+                "P0 실물 품목은 유효한 단위(예: 'EA', 'SET', 'M' 등)를 지정해야 합니다 (ADR-005 / A05 도메인 기준)."
+            )
+
     _, conflicted = find_canonical_item_conflicts(mapping_rules)
     if conflicted:
         code = next(iter(sorted(conflicted)))
@@ -313,6 +322,35 @@ def build_takeoff_result(
 
     # Map item code to canonical metadata and detect cross-mapping attribute conflicts (ADR-005)
     item_meta, conflicted_codes = find_canonical_item_conflicts(mapping_rules)
+
+    # ADR-005: Integrate manual objects into canonical metadata and detect unit consistency
+    manual_canon_meta: dict[str, str] = {}
+    for mo in manual_objects:
+        code = mo.item_code
+        if not code or code in ("EXCLUDE", "UNMAPPED"):
+            continue
+        mo_u = (mo.unit or "").strip()
+        if not mo_u:
+            conflicted_codes.add(code)
+            continue
+
+        if code in item_meta:
+            expected_u = (item_meta[code].unit or "").strip()
+            if expected_u and expected_u != mo_u:
+                conflicted_codes.add(code)
+        else:
+            if code in manual_canon_meta:
+                if manual_canon_meta[code] != mo_u:
+                    conflicted_codes.add(code)
+            else:
+                manual_canon_meta[code] = mo_u
+                item_meta[code] = ItemMappingRule(
+                    block_name="[MANUAL]",
+                    item_code=code,
+                    item_name=mo.item_name or code,
+                    unit=mo_u,
+                    specification="",
+                )
 
     # Run deterministic base aggregation
     agg = aggregate(drawing, engine_mappings)
@@ -473,24 +511,26 @@ def build_takeoff_result(
         rev_status = ReviewStatus.REVIEWED
         reason = mo.note or "수동 추가 기구"
 
-        # Check unit consistency with canonical mapping rule (ADR-005)
-        if mapped_item_code in item_meta:
-            expected_u = (item_meta[mapped_item_code].unit or "EA").strip()
-            actual_u = (mo.unit or "EA").strip()
-            if expected_u != actual_u:
-                conflicted_codes.add(mapped_item_code)
-                inc_status = InclusionStatus.EXCLUDED
-                rev_status = ReviewStatus.UNRESOLVED
-                reason = f"수동 추가 기구 단위('{mo.unit}')가 도면 매핑 정규 단위('{expected_u}')와 상충 (ADR-005)"
+        # Check unit consistency with canonical definition (ADR-005)
+        if mapped_item_code in conflicted_codes:
+            inc_status = InclusionStatus.EXCLUDED
+            rev_status = ReviewStatus.UNRESOLVED
+            reason = f"수동 추가 기구 단위('{mo.unit}') 상충/결함 (ADR-005)"
 
         override = reviews.get(mo.id)
         if override:
-            inc_status = override.inclusion_status
-            rev_status = override.review_status
-            if override.mapped_item_code:
-                mapped_item_code = override.mapped_item_code
-            if override.reason:
-                reason = override.reason
+            override_code = override.mapped_item_code or mapped_item_code
+            if override.inclusion_status == InclusionStatus.INCLUDED and override_code in conflicted_codes:
+                inc_status = InclusionStatus.EXCLUDED
+                rev_status = ReviewStatus.UNRESOLVED
+                reason = "품목 정의 충돌 객체는 수동 집계에 포함할 수 없습니다 (ADR-005)"
+            else:
+                inc_status = override.inclusion_status
+                rev_status = override.review_status
+                if override.mapped_item_code:
+                    mapped_item_code = override.mapped_item_code
+                if override.reason:
+                    reason = override.reason
 
         evidence_rows.append(
             TakeoffEvidenceRow(
@@ -535,8 +575,14 @@ def build_takeoff_result(
     drawing_name = meta.get("filename", drawing.source.filename)
     revision = meta.get("revision", "REV0")
 
-    # Include all mapped item codes even if quantity is 0
-    all_codes = sorted(set(list(counts.keys()) + [m.item_code for m in mapping_rules if m.item_code != "EXCLUDE"]))
+    # Include all mapped item codes and manual item codes even if quantity is 0
+    all_codes = sorted(
+        set(
+            list(counts.keys())
+            + [m.item_code for m in mapping_rules if m.item_code != "EXCLUDE"]
+            + [mo.item_code for mo in manual_objects if mo.item_code not in ("EXCLUDE", "UNMAPPED")]
+        )
+    )
 
     for code in all_codes:
         if code in conflicted_codes:

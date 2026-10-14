@@ -227,17 +227,17 @@ export default function WorkspacePage() {
 
   // Available items for manual addition derived from mappings or defaults
   const availableItems = useMemo(() => {
-    const list: { code: string; name: string }[] = [];
+    const list: { code: string; name: string; unit: string }[] = [];
     const seen = new Set<string>();
     for (const m of mappings) {
       if (m.item_code && m.item_code !== "EXCLUDE" && !seen.has(m.item_code)) {
         seen.add(m.item_code);
-        list.push({ code: m.item_code, name: m.item_name || m.item_code });
+        list.push({ code: m.item_code, name: m.item_name || m.item_code, unit: m.unit || "EA" });
       }
     }
-    if (!seen.has("LIGHT")) list.push({ code: "LIGHT", name: "전등 (다운라이트/평판등)" });
-    if (!seen.has("OUTLET")) list.push({ code: "OUTLET", name: "전열 (매입 콘센트)" });
-    if (!seen.has("SWITCH")) list.push({ code: "SWITCH", name: "스위치 (텀블러 스위치)" });
+    if (!seen.has("LIGHT")) list.push({ code: "LIGHT", name: "전등 (다운라이트/평판등)", unit: "EA" });
+    if (!seen.has("OUTLET")) list.push({ code: "OUTLET", name: "전열 (매입 콘센트)", unit: "EA" });
+    if (!seen.has("SWITCH")) list.push({ code: "SWITCH", name: "스위치 (텀블러 스위치)", unit: "EA" });
     return list;
   }, [mappings]);
 
@@ -247,19 +247,26 @@ export default function WorkspacePage() {
   };
 
   // Confirm manual object addition after mandatory item & reason selection
-  const handleConfirmManualAdd = async (itemCode: string, reason: string, note: string) => {
+  const handleConfirmManualAdd = async (
+    itemCode: string,
+    reason: string,
+    note: string,
+    customUnit?: string
+  ) => {
     if (!currentProject || !currentDrawing || !pendingManualCoord) return;
     setIsSaving(true);
     try {
       const manualId = `manual_${Date.now()}`;
+      const matched = availableItems.find((i) => i.code === itemCode);
+      const unit = matched?.unit || customUnit || "EA";
       await api.addManualObject(currentProject.id, currentDrawing.drawing_id, {
         id: manualId,
         drawing_id: currentDrawing.drawing_id,
         x: pendingManualCoord.x,
         y: pendingManualCoord.y,
         item_code: itemCode,
-        item_name: availableItems.find((i) => i.code === itemCode)?.name || itemCode,
-        unit: "EA",
+        item_name: matched?.name || itemCode,
+        unit: unit,
         note: note ? `[${reason}] ${note}` : `[${reason}] 수동 추가`,
       });
       setPendingManualCoord(null);

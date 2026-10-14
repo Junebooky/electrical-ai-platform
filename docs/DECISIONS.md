@@ -87,9 +87,12 @@
    - P0 산출 엔진 및 API 스토리지 계층에서 품목 집계의 고유 기준 키는 `item_code`입니다 (PRD §7.1 준수).
    - **API 및 엔진 정합성 계약**:
      - `PUT /mappings` 요청 시 동일 도면 내에서 동일 `item_code`에 대해 단위(`unit`) 또는 규격(`specification`)이 상충하는 규칙이 포함된 경우(동일 블록 및 서로 다른 블록 간 모두 포함), API는 **HTTP 400 Bad Request**로 즉시 거부합니다.
-     - `POST /manual-objects` 시 지정된 `item_code`의 단위(`unit`)가 도면 매핑에 정의된 정규 단위와 다를 경우 역시 **HTTP 400 Bad Request**로 즉시 거부합니다.
+     - 매핑 및 수동 기구의 단위(`unit`)는 공백이나 빈 문자열을 허용하지 않으며, P0 실물 기구는 유효한 단위(예: 'EA', 'SET', 'M' 등)를 명시해야 합니다. 누락 시 **HTTP 400 Bad Request**로 즉시 거부합니다.
+     - `POST /manual-objects` 시:
+       - 지정된 `item_code`가 도면 매핑에 존재하는 경우: 매핑에 정의된 정규 단위와 다르면 **HTTP 400 Bad Request**로 거부합니다.
+       - 지정된 `item_code`가 매핑에 없는 수동 전용 품목인 경우: 해당 품목의 단위(예: 'SET')를 정규 단위로 채택하여 Summary/CSV/XLSX에 정확히 출력하며, 동일 수동 품목에 대해 서로 다른 단위(예: 'SET'과 'EA')가 혼합 입력되면 **HTTP 400 Bad Request**로 거부합니다.
      - API에서 엔진으로 매핑을 전달할 때 `unit`과 `specification`을 누락 없이 전달(`BlockMapping(..., unit=m.unit, specification=m.specification)`)하여 엔진 레벨의 동순위 상충 감지가 누락되지 않도록 보장합니다.
-     - 레거시 데이터나 파일 직접 조작으로 충돌 매핑이 스토리지에 존재하는 경우라도, 집계 빌드 경로(`build_takeoff_result`)에서 상충 품목을 감지하여 임의의 메타데이터 덮어쓰기나 서로 다른 단위(EA/SET)의 자동 합산을 엄격히 금지하고, 수량 0 EA 및 `UNRESOLVED`(`품목 정의 충돌`)로 fail-closed 격리합니다.
+     - 레거시 데이터나 파일 직접 조작으로 충돌 매핑 또는 수동 단위 불일치가 스토리지에 존재하는 경우라도, 집계 빌드 경로(`build_takeoff_result`)에서 상충 품목을 감지하여 임의의 메타데이터 덮어쓰기나 서로 다른 단위(EA/SET)의 자동 합산을 엄격히 금지하고, 수량 0 EA 및 `UNRESOLVED`(`품목 정의 충돌`)로 fail-closed 격리합니다.
    - 복수 규격/단위의 다차원 품목 분류 체계 확장은 P1 과제로 분리합니다.
 2. **구조적 결함 및 미검증 CAD 블록의 검수 오버라이드 차단**:
    - 외부참조(`XREF_UNRESOLVED`), 블록 정의 누락(`MISSING_BLOCK_DEFINITION`), 순환 참조(`CIRCULAR_BLOCK_REFERENCE`)는 물론, 동적 블록(`DYNAMIC_BLOCK`), 익명 블록(`ANONYMOUS_BLOCK`), 중첩 계층(`NESTED_BLOCK` 하위 객체 및 상위 어셈블리 컨테이너)은 P0에서 CAD 자동 집계 및 사용자 `INCLUDED` 검수 오버라이드를 원천 차단합니다.
