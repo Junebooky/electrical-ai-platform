@@ -126,3 +126,7 @@ class DrawingSummary(BaseModel):
     created_at: datetime
     objects_count: int
     warnings_count: int
+    source_type: str = "DXF"
+    file_type: str = "DXF"
+    coordinate_space: str = "WORLD"
+    dimensions: dict[str, int] | None = None

@@ -92,6 +92,10 @@ class Storage:
         drawing: NormalizedDrawing,
         revision: str = "REV0",
         raw_bytes: bytes | None = None,
+        source_type: str = "DXF",
+        file_type: str = "DXF",
+        coordinate_space: str = "WORLD",
+        dimensions: dict[str, int] | None = None,
     ) -> Path:
         d_dir = self.projects_dir / project_id / "drawings" / drawing.drawing_id
         d_dir.mkdir(parents=True, exist_ok=True)
@@ -100,10 +104,11 @@ class Storage:
         drawing_file = d_dir / "drawing.json"
         self._save_json(drawing_file, drawing.model_dump(mode="json"))
 
-        # 2. save raw DXF bytes if provided (FR-002, QA-DEF-01)
+        # 2. save raw bytes if provided (FR-002, QA-DEF-01)
         raw_saved = False
+        raw_filename = f"raw.{file_type.lower()}" if file_type.lower() in ("png", "jpg", "jpeg") else "raw.dxf"
         if raw_bytes is not None:
-            raw_file = d_dir / "raw.dxf"
+            raw_file = d_dir / raw_filename
             raw_file.write_bytes(raw_bytes)
             raw_saved = True
 
@@ -115,13 +120,17 @@ class Storage:
             "file_hash": drawing.source.sha256,
             "file_size_bytes": len(raw_bytes) if raw_bytes is not None else drawing.source.size_bytes,
             "raw_file_saved": raw_saved,
-            "raw_filename": "raw.dxf" if raw_saved else None,
+            "raw_filename": raw_filename if raw_saved else None,
             "revision": revision,
             "units_name": drawing.dxf.units_name,
             "insunits": drawing.dxf.insunits,
             "created_at": datetime.now(UTC).isoformat(),
             "objects_count": len(drawing.objects),
             "warnings_count": len(drawing.warnings),
+            "source_type": source_type,
+            "file_type": file_type,
+            "coordinate_space": coordinate_space,
+            "dimensions": dimensions,
         }
         self._save_json(d_dir / "meta.json", meta)
 
@@ -136,9 +145,30 @@ class Storage:
         return d_dir
 
     def get_raw_drawing_path(self, project_id: str, drawing_id: str) -> Path | None:
-        raw_file = self.projects_dir / project_id / "drawings" / drawing_id / "raw.dxf"
-        if raw_file.exists():
-            return raw_file
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        meta_file = d_dir / "meta.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                if meta.get("raw_filename"):
+                    raw_fn = str(meta["raw_filename"])
+                    p = d_dir / raw_fn
+                    if p.exists():
+                        return p
+            except Exception:
+                pass
+        for name in ("raw.dxf", "raw.png", "raw.jpg", "raw.jpeg"):
+            raw_file = d_dir / name
+            if raw_file.exists():
+                return raw_file
+        return None
+
+    def get_drawing_image_path(self, project_id: str, drawing_id: str) -> Path | None:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        for name in ("raw.png", "raw.jpg", "raw.jpeg"):
+            p = d_dir / name
+            if p.exists():
+                return p
         return None
 
     def list_drawings(self, project_id: str) -> list[DrawingSummary]:

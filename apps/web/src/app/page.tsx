@@ -391,13 +391,31 @@ export default function WorkspacePage() {
 
           {currentDrawing && (
             <div className="hidden lg:flex items-center gap-3 text-xs font-mono text-slate-300 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-              <span className="text-sky-400 font-semibold">{currentDrawing.source.filename}</span>
+              <span className={currentDrawing.source_type === "IMAGE" ? "text-amber-400 font-semibold" : "text-sky-400 font-semibold"}>
+                {currentDrawing.source.filename}
+              </span>
               <span className="text-slate-600">|</span>
-              <span>단위: {currentDrawing.dxf.units_name}</span>
-              <span className="text-slate-600">|</span>
-              <span>객체: {currentDrawing.objects.length}</span>
-              <span className="text-slate-600">|</span>
-              <span>프리미티브: {currentDrawing.primitives.length}</span>
+              {currentDrawing.source_type === "IMAGE" ? (
+                <>
+                  <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded text-[11px]">
+                    2D 이미지 (수동 마커)
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span>
+                    해상도: {currentDrawing.dimensions?.width || currentDrawing.extents?.max[0]}x{currentDrawing.dimensions?.height || currentDrawing.extents?.max[1]}px
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span>수동 마커: {manualMarkers.length}개</span>
+                </>
+              ) : (
+                <>
+                  <span>단위: {currentDrawing.dxf.units_name}</span>
+                  <span className="text-slate-600">|</span>
+                  <span>객체: {currentDrawing.objects.length}</span>
+                  <span className="text-slate-600">|</span>
+                  <span>프리미티브: {currentDrawing.primitives.length}</span>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -421,7 +439,7 @@ export default function WorkspacePage() {
           <input
             type="file"
             ref={fileInputRef}
-            accept=".dxf"
+            accept=".dxf,.png,.jpg,.jpeg"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -435,10 +453,24 @@ export default function WorkspacePage() {
             className="flex items-center gap-1.5 px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-sky-600/20 transition"
           >
             <Upload size={14} />
-            {isLoading ? "도면 분석 중..." : "DXF 업로드"}
+            {isLoading ? "도면 분석 중..." : "도면 업로드"}
           </button>
         </div>
       </header>
+
+      {/* 2D Image Mode Notice Banner (FR-015/016) */}
+      {currentDrawing?.source_type === "IMAGE" && (
+        <div className="bg-sky-950/70 border-b border-sky-800/60 px-4 py-2 text-xs text-sky-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="px-1.5 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded text-[10px] font-mono font-semibold">
+              v1.1 이미지 모드
+            </span>
+            <span>
+              ※ 2D 이미지 도면은 자동 기호 인식이 제공되지 않으며(FR-016), 상단 <b>[누락 기구 수동 추가]</b> 활성화 후 도면을 클릭하여 픽셀 좌표에 마커(EA)를 등록하고 실시간 적산표를 산출합니다.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Drawing Warnings Bar */}
       {currentDrawing && <WarningBanner warnings={currentDrawing.warnings} />}
@@ -474,6 +506,11 @@ export default function WorkspacePage() {
                 isAddManualMode={isAddManualMode}
                 onAddManualPoint={handleAddManualPoint}
                 manualMarkers={manualMarkers}
+                imageUrl={
+                  currentDrawing.source_type === "IMAGE" && currentProject
+                    ? api.getImageUrl(currentProject.id, currentDrawing.drawing_id)
+                    : null
+                }
               />
 
               {/* Floating Review Drawer when object is selected */}
@@ -564,13 +601,31 @@ export default function WorkspacePage() {
                 )}
 
                 {activeRightTab === "mapping" && (
-                  <MappingPanel
-                    key={currentDrawing.drawing_id}
-                    blocks={currentDrawing.blocks}
-                    mappings={mappings}
-                    onSaveMappings={handleSaveMappings}
-                    isSaving={isSaving}
-                  />
+                  currentDrawing.source_type === "IMAGE" ? (
+                    <div className="p-8 text-center text-slate-400 text-xs flex flex-col items-center justify-center h-full">
+                      <div className="w-12 h-12 mb-3 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center text-amber-400 shadow-inner">
+                        <Tags size={22} />
+                      </div>
+                      <h3 className="font-semibold text-slate-200 text-sm mb-1.5">2D 이미지 도면 (CAD 블록 없음)</h3>
+                      <p className="text-slate-400 mb-5 max-w-[320px] leading-relaxed">
+                        래스터 이미지 도면은 CAD 블록 구조가 없으므로 블록-품목 매핑 대신 도면상 <b>[누락 기구 수동 추가]</b>를 활성화하여 기구 마커를 직접 배치합니다.
+                      </p>
+                      <button
+                        onClick={() => setActiveRightTab("takeoff")}
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-md shadow-emerald-600/20 transition"
+                      >
+                        물량산출표 보기
+                      </button>
+                    </div>
+                  ) : (
+                    <MappingPanel
+                      key={currentDrawing.drawing_id}
+                      blocks={currentDrawing.blocks}
+                      mappings={mappings}
+                      onSaveMappings={handleSaveMappings}
+                      isSaving={isSaving}
+                    />
+                  )
                 )}
 
                 {activeRightTab === "layers" && (

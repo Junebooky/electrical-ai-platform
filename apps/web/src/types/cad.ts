@@ -119,6 +119,10 @@ export interface NormalizedDrawing {
     primitive_points: number;
     parse_ms: number;
   };
+  source_type?: "DXF" | "IMAGE" | "PDF";
+  file_type?: string;
+  coordinate_space?: string;
+  dimensions?: { width: number; height: number };
 }
 
 export interface ItemMappingRule {
@@ -211,5 +215,9 @@ export interface DrawingSummary {
   created_at: string;
   objects_count: number;
   warnings_count: number;
+  source_type?: "DXF" | "IMAGE" | "PDF";
+  file_type?: string;
+  coordinate_space?: string;
+  dimensions?: { width: number; height: number };
 }
 

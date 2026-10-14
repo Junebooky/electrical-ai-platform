@@ -22,6 +22,7 @@ interface CadViewerProps {
   isAddManualMode?: boolean;
   onAddManualPoint?: (x: number, y: number) => void;
   manualMarkers?: ManualMarker[];
+  imageUrl?: string | null;
 }
 
 export function CadViewer({
@@ -33,11 +34,15 @@ export function CadViewer({
   isAddManualMode = false,
   onAddManualPoint,
   manualMarkers = [],
+  imageUrl,
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  const isImage = drawing.source_type === "IMAGE" || drawing.dxf?.units_name === "PIXEL";
+  const imgWidth = drawing.dimensions?.width || (drawing.extents ? drawing.extents.max[0] : 1000);
+  const imgHeight = drawing.dimensions?.height || (drawing.extents ? drawing.extents.max[1] : 800);
+
   // Viewport transform state: [scale, tx, ty]
-  // In CAD, +Y is UP, but in SVG +Y is DOWN. We invert Y coordinates in world space.
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -46,9 +51,12 @@ export function CadViewer({
 
   // Compute extents
   const extents = useMemo(() => {
+    if (isImage) {
+      return { min: [0, 0] as [number, number], max: [imgWidth, imgHeight] as [number, number] };
+    }
     if (drawing.extents) return drawing.extents;
     return { min: [0, 0] as [number, number], max: [1000, 1000] as [number, number] };
-  }, [drawing.extents]);
+  }, [drawing.extents, isImage, imgWidth, imgHeight]);
 
   const fitToScreen = useCallback(() => {
     if (!containerRef.current) return;
@@ -69,15 +77,19 @@ export function CadViewer({
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
 
-    // We map world (cx, cy) to screen (w/2, h/2)
-    // screenX = w/2 + (worldX - cx) * s
-    // screenY = h/2 - (worldY - cy) * s  (inverted Y)
     setScale(s);
-    setPan({
-      x: w / 2 - cx * s,
-      y: h / 2 + cy * s,
-    });
-  }, [extents]);
+    if (isImage) {
+      setPan({
+        x: w / 2 - cx * s,
+        y: h / 2 - cy * s,
+      });
+    } else {
+      setPan({
+        x: w / 2 - cx * s,
+        y: h / 2 + cy * s,
+      });
+    }
+  }, [extents, isImage]);
 
   useEffect(() => {
     fitToScreen();
@@ -95,12 +107,11 @@ export function CadViewer({
     const newScale = Math.max(Math.min(scale * zoomFactor, 200), 0.001);
 
     // Zoom centered on cursor
-    // mouseX = pan.x + worldX * scale => worldX = (mouseX - pan.x) / scale
     const worldX = (mouseX - pan.x) / scale;
-    const worldY = (pan.y - mouseY) / scale;
+    const worldY = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
 
     const newPanX = mouseX - worldX * newScale;
-    const newPanY = mouseY + worldY * newScale;
+    const newPanY = isImage ? mouseY - worldY * newScale : mouseY + worldY * newScale;
 
     setScale(newScale);
     setPan({ x: newPanX, y: newPanY });
@@ -126,10 +137,12 @@ export function CadViewer({
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    // Invert screen to CAD world coordinates
     const wx = (mouseX - pan.x) / scale;
-    const wy = (pan.y - mouseY) / scale;
-    setMouseWorld({ x: Math.round(wx * 100) / 100, y: Math.round(wy * 100) / 100 });
+    const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+    setMouseWorld({
+      x: isImage ? Math.round(wx) : Math.round(wx * 100) / 100,
+      y: isImage ? Math.round(wy) : Math.round(wy * 100) / 100,
+    });
 
     if (isDragging) {
       setPan({
@@ -155,8 +168,11 @@ export function CadViewer({
           const mouseX = e.clientX - rect.left;
           const mouseY = e.clientY - rect.top;
           const wx = (mouseX - pan.x) / scale;
-          const wy = (pan.y - mouseY) / scale;
-          onAddManualPoint(Math.round(wx * 100) / 100, Math.round(wy * 100) / 100);
+          const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+          onAddManualPoint(
+            isImage ? Math.round(wx) : Math.round(wx * 100) / 100,
+            isImage ? Math.round(wy) : Math.round(wy * 100) / 100
+          );
         }
       }
     }
@@ -242,13 +258,13 @@ export function CadViewer({
       {/* Coordinate & Unit status overlay at bottom */}
       <div className="absolute bottom-3 left-4 z-20 flex items-center gap-4 text-xs font-mono text-slate-400 bg-slate-900/80 px-3 py-1.5 rounded border border-slate-800 pointer-events-none">
         <span>
-          X: <b className="text-slate-200">{mouseWorld.x}</b>
+          X: <b className="text-slate-200">{mouseWorld.x}</b>{isImage ? " px" : ""}
         </span>
         <span>
-          Y: <b className="text-slate-200">{mouseWorld.y}</b>
+          Y: <b className="text-slate-200">{mouseWorld.y}</b>{isImage ? " px" : ""}
         </span>
         <span className="text-slate-500">|</span>
-        <span>{drawing.dxf.units_name}</span>
+        <span>{isImage ? "IMAGE (픽셀 좌표계)" : drawing.dxf.units_name}</span>
       </div>
 
       {/* SVG Canvas */}
@@ -257,145 +273,162 @@ export function CadViewer({
         xmlns="http://www.w3.org/2000/svg"
       >
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale})`}>
+          {/* Render Raster Image if Image Drawing */}
+          {isImage && imageUrl && (
+            <image
+              href={imageUrl}
+              x={0}
+              y={0}
+              width={imgWidth}
+              height={imgHeight}
+              preserveAspectRatio="none"
+              className="pointer-events-none select-none"
+            />
+          )}
+
           {/* Render Vector Primitives (CAD lines, polylines) */}
-          {visiblePrimitives.map((prim, idx) => {
-            if (prim.kind === "polyline") {
-              if (prim.points.length === 0) return null;
-              if (prim.points.length === 1) {
-                const [px, py] = prim.points[0];
+          {!isImage &&
+            visiblePrimitives.map((prim, idx) => {
+              if (prim.kind === "polyline") {
+                if (prim.points.length === 0) return null;
+                if (prim.points.length === 1) {
+                  const [px, py] = prim.points[0];
+                  return (
+                    <circle
+                      key={idx}
+                      cx={px}
+                      cy={-py}
+                      r={2 / scale}
+                      fill={prim.color || "#94a3b8"}
+                    />
+                  );
+                }
+                const d = prim.points
+                  .map((pt, i) => `${i === 0 ? "M" : "L"} ${pt[0]} ${-pt[1]}`)
+                  .join(" ");
                 return (
-                  <circle
+                  <path
                     key={idx}
-                    cx={px}
-                    cy={-py}
-                    r={2 / scale}
-                    fill={prim.color || "#94a3b8"}
+                    d={prim.closed ? `${d} Z` : d}
+                    fill="none"
+                    stroke={prim.color || "#64748b"}
+                    strokeWidth={1 / scale}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
                   />
                 );
               }
-              const d = prim.points
-                .map((pt, i) => `${i === 0 ? "M" : "L"} ${pt[0]} ${-pt[1]}`)
-                .join(" ");
-              return (
-                <path
-                  key={idx}
-                  d={prim.closed ? `${d} Z` : d}
-                  fill="none"
-                  stroke={prim.color || "#64748b"}
-                  strokeWidth={1 / scale}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  vectorEffect="non-scaling-stroke"
-                />
-              );
-            }
-            if (prim.kind === "text" && prim.text && prim.points.length > 0) {
-              const [tx, ty] = prim.points[0];
-              const h = (prim.height || 10);
-              return (
-                <text
-                  key={idx}
-                  x={tx}
-                  y={-ty}
-                  fontSize={h}
-                  fill={prim.color || "#cbd5e1"}
-                  transform={
-                    prim.rotation_deg
-                      ? `rotate(${-prim.rotation_deg}, ${tx}, ${-ty})`
-                      : undefined
-                  }
-                  style={{
-                    fontFamily: "monospace",
-                    pointerEvents: "none",
-                  }}
-                >
-                  {prim.text}
-                </text>
-              );
-            }
-            return null;
-          })}
+              if (prim.kind === "text" && prim.text && prim.points.length > 0) {
+                const [tx, ty] = prim.points[0];
+                const h = prim.height || 10;
+                return (
+                  <text
+                    key={idx}
+                    x={tx}
+                    y={-ty}
+                    fontSize={h}
+                    fill={prim.color || "#cbd5e1"}
+                    transform={
+                      prim.rotation_deg
+                        ? `rotate(${-prim.rotation_deg}, ${tx}, ${-ty})`
+                        : undefined
+                    }
+                    style={{
+                      fontFamily: "monospace",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {prim.text}
+                  </text>
+                );
+              }
+              return null;
+            })}
 
           {/* Interactive Block Markers (Clickable CAD Objects) */}
-          {visibleObjects.map((obj) => {
-            if (!obj.insert_point) return null;
-            const [ix, iy] = obj.insert_point;
-            const isSelected = obj.id === selectedObjectId;
-            const isHighlighted = highlightedSet.has(obj.id);
+          {!isImage &&
+            visibleObjects.map((obj) => {
+              if (!obj.insert_point) return null;
+              const [ix, iy] = obj.insert_point;
+              const isSelected = obj.id === selectedObjectId;
+              const isHighlighted = highlightedSet.has(obj.id);
 
-            // Radius for clickable symbol target (strictly 16 screen pixels regardless of zoom or CAD units)
-            const markerRadius = 16 / Math.max(scale, 1e-6);
+              // Radius for clickable symbol target (strictly 16 screen pixels regardless of zoom or CAD units)
+              const markerRadius = 16 / Math.max(scale, 1e-6);
 
-            return (
-              <g
-                key={obj.id}
-                transform={`translate(${ix}, ${-iy})`}
-                className="pointer-events-auto cursor-pointer interactive-marker"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectObject(obj.id);
-                }}
-              >
-                {/* Outer Glow for Selected / Highlighted */}
-                {isSelected && (
+              return (
+                <g
+                  key={obj.id}
+                  transform={`translate(${ix}, ${-iy})`}
+                  className="pointer-events-auto cursor-pointer interactive-marker"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectObject(obj.id);
+                  }}
+                >
+                  {/* Outer Glow for Selected / Highlighted */}
+                  {isSelected && (
+                    <circle
+                      cx={0}
+                      cy={0}
+                      r={markerRadius * 1.5}
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth={4 / scale}
+                      className="animate-pulse"
+                    />
+                  )}
+                  {isHighlighted && !isSelected && (
+                    <circle
+                      cx={0}
+                      cy={0}
+                      r={markerRadius * 1.3}
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth={2 / scale}
+                      strokeDasharray={`${4 / scale},${4 / scale}`}
+                    />
+                  )}
+
+                  {/* Interactive Hit Area Circle */}
                   <circle
                     cx={0}
                     cy={0}
-                    r={markerRadius * 1.5}
-                    fill="none"
-                    stroke="#38bdf8"
-                    strokeWidth={4 / scale}
-                    className="animate-pulse"
+                    r={markerRadius}
+                    fill={
+                      isSelected
+                        ? "rgba(56, 189, 248, 0.35)"
+                        : isHighlighted
+                        ? "rgba(245, 158, 11, 0.25)"
+                        : "rgba(148, 163, 184, 0.08)"
+                    }
+                    stroke={
+                      isSelected
+                        ? "#38bdf8"
+                        : isHighlighted
+                        ? "#f59e0b"
+                        : "rgba(148, 163, 184, 0.3)"
+                    }
+                    strokeWidth={1.5 / scale}
                   />
-                )}
-                {isHighlighted && !isSelected && (
-                  <circle
-                    cx={0}
-                    cy={0}
-                    r={markerRadius * 1.3}
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth={2 / scale}
-                    strokeDasharray={`${4 / scale},${4 / scale}`}
-                  />
-                )}
-
-                {/* Interactive Hit Area Circle */}
-                <circle
-                  cx={0}
-                  cy={0}
-                  r={markerRadius}
-                  fill={
-                    isSelected
-                      ? "rgba(56, 189, 248, 0.35)"
-                      : isHighlighted
-                      ? "rgba(245, 158, 11, 0.25)"
-                      : "rgba(148, 163, 184, 0.08)"
-                  }
-                  stroke={
-                    isSelected
-                      ? "#38bdf8"
-                      : isHighlighted
-                      ? "#f59e0b"
-                      : "rgba(148, 163, 184, 0.3)"
-                  }
-                  strokeWidth={1.5 / scale}
-                />
-              </g>
-            );
-          })}
+                </g>
+              );
+            })}
 
           {/* Interactive Manual Markers (Manually Added Objects) */}
           {manualMarkers.map((m) => {
             const isSelected = m.id === selectedObjectId;
             const isHighlighted = highlightedSet.has(m.id);
             const mRadius = 16 / Math.max(scale, 1e-6);
+            const markerY = isImage ? m.y : -m.y;
 
             return (
               <g
                 key={m.id}
-                transform={`translate(${m.x}, ${-m.y})`}
+                data-testid={`manual-marker-${m.id}`}
+                transform={`translate(${m.x}, ${markerY})`}
                 className="pointer-events-auto cursor-pointer interactive-marker"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -430,6 +463,18 @@ export function CadViewer({
                   stroke="#f59e0b"
                   strokeWidth={2 / scale}
                 />
+                {/* Short Item Code Label overlay for easy identification */}
+                <text
+                  x={0}
+                  y={mRadius * 1.5}
+                  textAnchor="middle"
+                  fontSize={10 / Math.max(scale, 1e-6)}
+                  fill="#fde68a"
+                  className="font-mono font-semibold pointer-events-none select-none"
+                  style={{ textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}
+                >
+                  {m.item_code}
+                </text>
               </g>
             );
           })}
