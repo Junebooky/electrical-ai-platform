@@ -317,7 +317,7 @@ def test_exif_orientation_rejected(client: TestClient) -> None:
 
 
 def test_manual_marker_bounds_on_image_drawing(client: TestClient) -> None:
-    """Test manual marker boundary check on IMAGE drawings (0 <= x <= w, 0 <= y <= h, finite)."""
+    """Test manual marker boundary check on IMAGE drawings [0, w) x [0, h) half-open interval."""
     proj_res = client.post("/api/projects", json={"name": "좌표 경계 테스트"})
     proj_id = proj_res.json()["id"]
 
@@ -328,29 +328,50 @@ def test_manual_marker_bounds_on_image_drawing(client: TestClient) -> None:
     )
     drawing_id = upload_res.json()["drawing_id"]
 
-    # 1. Negative X should be rejected with 400
+    # 1. Negative coordinates should be rejected with 400
     neg_x = client.post(
         f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
-        json={"id": "m_neg_x", "drawing_id": drawing_id, "x": -5.0, "y": 100.0, "item_code": "LIGHT", "unit": "EA"},
+        json={"id": "m_neg_x", "drawing_id": drawing_id, "x": -0.1, "y": 100.0, "item_code": "LIGHT", "unit": "EA"},
     )
     assert neg_x.status_code == 400
     assert "벗어났습니다" in neg_x.json()["detail"]
 
-    # 2. Beyond Width (1001 > 1000) should be rejected with 400
-    over_x = client.post(
+    neg_y = client.post(
         f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
-        json={"id": "m_over_x", "drawing_id": drawing_id, "x": 1001.0, "y": 100.0, "item_code": "LIGHT", "unit": "EA"},
+        json={"id": "m_neg_y", "drawing_id": drawing_id, "x": 100.0, "y": -0.1, "item_code": "LIGHT", "unit": "EA"},
     )
-    assert over_x.status_code == 400
-    assert "벗어났습니다" in over_x.json()["detail"]
+    assert neg_y.status_code == 400
+    assert "벗어났습니다" in neg_y.json()["detail"]
 
-    # 3. Beyond Height (801 > 800) should be rejected with 400
-    over_y = client.post(
+    # 2. Boundary edge at width/height (1000.0, 800.0) must be rejected with 400 (half-open interval)
+    edge_x = client.post(
         f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
-        json={"id": "m_over_y", "drawing_id": drawing_id, "x": 500.0, "y": 801.0, "item_code": "LIGHT", "unit": "EA"},
+        json={"id": "m_edge_x", "drawing_id": drawing_id, "x": 1000.0, "y": 0.0, "item_code": "LIGHT", "unit": "EA"},
     )
-    assert over_y.status_code == 400
-    assert "벗어났습니다" in over_y.json()["detail"]
+    assert edge_x.status_code == 400
+    assert "벗어났습니다" in edge_x.json()["detail"]
+
+    edge_y = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_edge_y", "drawing_id": drawing_id, "x": 0.0, "y": 800.0, "item_code": "LIGHT", "unit": "EA"},
+    )
+    assert edge_y.status_code == 400
+    assert "벗어났습니다" in edge_y.json()["detail"]
+
+    edge_corner = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_edge_corner", "drawing_id": drawing_id, "x": 1000.0, "y": 800.0, "item_code": "LIGHT", "unit": "EA"},
+    )
+    assert edge_corner.status_code == 400
+    assert "벗어났습니다" in edge_corner.json()["detail"]
+
+    # 3. Beyond Width and Height
+    over_res = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_over", "drawing_id": drawing_id, "x": 1001.0, "y": 801.0, "item_code": "LIGHT", "unit": "EA"},
+    )
+    assert over_res.status_code == 400
+    assert "벗어났습니다" in over_res.json()["detail"]
 
     # 4. Non-finite values (NaN / Inf) should be rejected
     nan_res = client.post(
@@ -359,21 +380,173 @@ def test_manual_marker_bounds_on_image_drawing(client: TestClient) -> None:
     )
     assert nan_res.status_code in (400, 422)
 
-    # 5. Exactly on 4 corners: (0, 0), (1000, 0), (0, 800), (1000, 800) must succeed (200)
-    corners = [
-        ("c_top_left", 0.0, 0.0),
-        ("c_top_right", 1000.0, 0.0),
-        ("c_bottom_left", 0.0, 800.0),
-        ("c_bottom_right", 1000.0, 800.0),
+    # 5. Valid bounds within [0, 1000) x [0, 800):
+    # (0, 0), (999, 0), (0, 799), (999, 799), (999.9, 799.9) must succeed (200)
+    valid_points = [
+        ("p_origin", 0.0, 0.0),
+        ("p_top_right_max_int", 999.0, 0.0),
+        ("p_bottom_left_max_int", 0.0, 799.0),
+        ("p_bottom_right_max_int", 999.0, 799.0),
+        ("p_bottom_right_float", 999.9, 799.9),
     ]
-    for cid, cx, cy in corners:
-        c_res = client.post(
+    for pid, px, py in valid_points:
+        p_res = client.post(
             f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
-            json={"id": cid, "drawing_id": drawing_id, "x": cx, "y": cy, "item_code": "LIGHT", "unit": "EA"},
+            json={"id": pid, "drawing_id": drawing_id, "x": px, "y": py, "item_code": "LIGHT", "unit": "EA"},
         )
-        assert c_res.status_code == 200, f"Failed on corner ({cx}, {cy}): {c_res.text}"
+        assert p_res.status_code == 200, f"Failed on valid point ({px}, {py}): {p_res.text}"
 
-    # Verify takeoff has 4 items
+    # Verify takeoff has 5 items
     t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
     assert t_res.status_code == 200
-    assert t_res.json()["summary"][0]["quantity"] == 4
+    assert t_res.json()["summary"][0]["quantity"] == 5
+
+
+def test_image_drawing_img03_unit_security_enforcement(client: TestClient) -> None:
+    """Test IMG-03 / M-UNIT-01 security: Image drawings strictly enforce EA-only units across API layers."""
+    proj_res = client.post("/api/projects", json={"name": "IMG-03 보안 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    raw_bytes = FIXTURE_IMAGE_PATH.read_bytes()
+    upload_res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", raw_bytes, "image/png")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # 1. Attempt PUT /mappings with non-EA unit on IMAGE drawing must be rejected with 400
+    bad_map_res = client.put(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {
+                "block_name": "TEST_BLOCK",
+                "item_code": "PANEL_SET",
+                "item_name": "분전반",
+                "unit": "SET",
+            }
+        ],
+    )
+    assert bad_map_res.status_code == 400
+    assert "IMG-03" in bad_map_res.json()["detail"] or "EA" in bad_map_res.json()["detail"]
+
+    # Valid mapping with EA unit succeeds
+    ok_map_res = client.put(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/mappings",
+        json=[
+            {
+                "block_name": "TEST_BLOCK",
+                "item_code": "LIGHT_EA",
+                "item_name": "LED조명",
+                "unit": "EA",
+            }
+        ],
+    )
+    assert ok_map_res.status_code == 200
+
+    # 2. Attempt POST /manual-objects with non-EA unit must be rejected with 400
+    bad_man_res = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_bad_unit", "drawing_id": drawing_id, "x": 100.0, "y": 100.0, "item_code": "LIGHT_EA", "unit": "SET"},
+    )
+    assert bad_man_res.status_code == 400
+    assert "IMG-03" in bad_man_res.json()["detail"]
+
+    # Add valid manual object with EA unit
+    ok_man_res = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_ok_1", "drawing_id": drawing_id, "x": 100.0, "y": 100.0, "item_code": "LIGHT_EA", "unit": "EA"},
+    )
+    assert ok_man_res.status_code == 200
+
+    # 3. Attempt PUT /reviews to reclassify with non-EA target unit:
+    # First, verify reclassifying to EXCLUDE or UNMAPPED is allowed
+    rev_ok = client.put(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": "m_ok_1",
+                "mapped_item_code": "EXCLUDE",
+                "inclusion_status": "EXCLUDED",
+                "review_status": "REVIEWED",
+                "reason": "검수 제외",
+            }
+        ],
+    )
+    assert rev_ok.status_code == 200
+
+    # Reclassify back to LIGHT_EA
+    rev_ok2 = client.put(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": "m_ok_1",
+                "mapped_item_code": "LIGHT_EA",
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "reason": "정상 포함",
+            }
+        ],
+    )
+    assert rev_ok2.status_code == 200
+
+    # 4. Fail-closed defense: Tampered object with non-EA unit directly in storage
+    from eai_api import app as app_module
+    from eai_api.models import ManualObjectItem
+
+    app_module.storage.save_manual_objects(
+        proj_id,
+        drawing_id,
+        [
+            ManualObjectItem(
+                id="m_ok_1",
+                drawing_id=drawing_id,
+                x=100.0,
+                y=100.0,
+                item_code="LIGHT_EA",
+                item_name="LED조명",
+                unit="EA",
+            ),
+            ManualObjectItem(
+                id="m_tampered_non_ea",
+                drawing_id=drawing_id,
+                x=200.0,
+                y=200.0,
+                item_code="TAMPERED_CABLE",
+                item_name="케이블",
+                unit="M",
+            ),
+        ],
+    )
+
+    t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
+    assert t_res.status_code == 200
+    t_data = t_res.json()
+
+    # The tampered non-EA object must be EXCLUDED and UNRESOLVED in evidence
+    tampered_ev = next(e for e in t_data["evidence"] if e["source_object_id"] == "m_tampered_non_ea")
+    assert tampered_ev["inclusion_status"] == "EXCLUDED"
+    assert tampered_ev["review_status"] == "UNRESOLVED"
+    assert "비EA 불허" in tampered_ev["review_reason"]
+
+    # In summary rows, TAMPERED_CABLE must have quantity == 0 and UNRESOLVED
+    sum_by_code = {s["item_code"]: s for s in t_data["summary"]}
+    assert sum_by_code["TAMPERED_CABLE"]["quantity"] == 0
+    assert sum_by_code["TAMPERED_CABLE"]["review_status"] == "UNRESOLVED"
+
+    # LIGHT_EA must have quantity == 1 and unit == "EA"
+    assert sum_by_code["LIGHT_EA"]["quantity"] == 1
+    assert sum_by_code["LIGHT_EA"]["unit"] == "EA"
+
+    # 5. Export CSV & XLSX safety: CSV Summary should have quantity 0 for TAMPERED_CABLE
+    csv_sum = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/export/csv?type=summary")
+    assert csv_sum.status_code == 200
+    csv_text = csv_sum.content.decode("utf-8-sig")
+    assert "TAMPERED_CABLE" in csv_text
+    assert ",0,MANUAL,UNRESOLVED," in csv_text
+    assert "[상충 단위 충돌]" in csv_text
+    assert "LIGHT_EA,LED조명,,EA,1,MANUAL" in csv_text
+
+    # Also verify XLSX export
+    xlsx_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/export/xlsx")
+    assert xlsx_res.status_code == 200
+    assert len(xlsx_res.content) > 1000

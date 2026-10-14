@@ -173,7 +173,7 @@ export function CadViewer({
           const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
 
           if (isImage) {
-            if (wx < 0 || wx > imgWidth || wy < 0 || wy > imgHeight) {
+            if (wx < 0 || wx >= imgWidth || wy < 0 || wy >= imgHeight) {
               onOutOfBoundsClick?.(wx, wy, imgWidth, imgHeight);
               setIsDragging(false);
               dragStartPos.current = null;
@@ -278,8 +278,8 @@ export function CadViewer({
         <span className="text-slate-500">|</span>
         <span>{isImage ? "IMAGE (픽셀 좌표계)" : drawing.dxf.units_name}</span>
         {isImage && isAddManualMode && (
-          <span className={mouseWorld.x < 0 || mouseWorld.x > imgWidth || mouseWorld.y < 0 || mouseWorld.y > imgHeight ? "text-amber-400 font-semibold" : "text-emerald-400 font-semibold"}>
-            {mouseWorld.x < 0 || mouseWorld.x > imgWidth || mouseWorld.y < 0 || mouseWorld.y > imgHeight ? "⚠ 도면 영역 밖 (추가 불가)" : "✓ 도면 내부"}
+          <span className={mouseWorld.x < 0 || mouseWorld.x >= imgWidth || mouseWorld.y < 0 || mouseWorld.y >= imgHeight ? "text-amber-400 font-semibold" : "text-emerald-400 font-semibold"}>
+            {mouseWorld.x < 0 || mouseWorld.x >= imgWidth || mouseWorld.y < 0 || mouseWorld.y >= imgHeight ? "⚠ 도면 영역 밖 (추가 불가)" : "✓ 도면 내부"}
           </span>
         )}
       </div>

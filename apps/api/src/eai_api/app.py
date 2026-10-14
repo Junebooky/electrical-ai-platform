@@ -269,6 +269,18 @@ def save_mappings(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    # IMG-03: On IMAGE drawings, all mapping units must be strictly 'EA'
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    if is_image:
+        for r in mappings:
+            actual_u = (r.unit or "EA").strip()
+            if actual_u != "EA":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미지 도면(IMAGE_PIXEL)의 매핑 단위는 P0 원칙(IMG-03/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
+                )
+
     try:
         storage.save_mappings(project_id, drawing_id, mappings)
     except ValueError as e:
@@ -287,17 +299,25 @@ def save_reviews(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
     mappings = storage.get_mappings(project_id, drawing_id)
     canon_defs = {m.item_code: m for m in mappings if m.item_code not in ("EXCLUDE", "UNMAPPED")}
     manual_objs = {mo.id: mo for mo in storage.get_manual_objects(project_id, drawing_id)}
     cad_objs = {obj.id: obj for obj in drawing.objects if obj.entity_type == "INSERT"}
 
-    # MUNIT-D: Validate unit consistency on review reclassification
+    # MUNIT-D / IMG-03: Validate unit consistency on review reclassification
     for r in reviews:
         if not r.mapped_item_code or r.mapped_item_code in ("EXCLUDE", "UNMAPPED"):
             continue
 
         target_unit = (canon_defs[r.mapped_item_code].unit or "EA").strip() if r.mapped_item_code in canon_defs else "EA"
+
+        # IMG-03: On IMAGE drawings, review reclassification to non-EA is strictly forbidden
+        if is_image and target_unit != "EA":
+            raise HTTPException(
+                status_code=400,
+                detail=f"이미지 도면(IMAGE_PIXEL)의 검수 재분류 단위는 P0 원칙(IMG-03)상 'EA'만 허용됩니다 (대상 단위: '{target_unit}').",
+            )
 
         if r.source_object_id in manual_objs:
             mo = manual_objs[r.source_object_id]
@@ -345,7 +365,7 @@ def add_manual_object(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
-    # High-2 Defense: Strict coordinate bounds for IMAGE drawings
+    # High-2 Defense: Strict coordinate bounds for IMAGE drawings [0, width) and [0, height)
     is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
     if is_image:
         dims = getattr(drawing, "dimensions", None) or {}
@@ -356,12 +376,14 @@ def add_manual_object(
                 status_code=400,
                 detail=f"수동 추가 좌표가 유효한 유한수(finite number)가 아닙니다 (x={item.x}, y={item.y}).",
             )
-        if item.x < 0.0 or item.x > img_w or item.y < 0.0 or item.y > img_h:
+        # Pixel indices must be strictly within half-open interval [0, width) and [0, height)
+        if item.x < 0.0 or item.x >= img_w or item.y < 0.0 or item.y >= img_h:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"수동 추가 기구 좌표(x={item.x}, y={item.y})가 "
-                    f"이미지 도면의 픽셀 경계(가로 0~{int(img_w)}, 세로 0~{int(img_h)})를 벗어났습니다."
+                    f"이미지 도면의 픽셀 유효 범위(가로 0~{int(img_w) - 1}, 세로 0~{int(img_h) - 1})를 벗어났습니다. "
+                    f"반열림 구간 [0, {int(img_w)}) × [0, {int(img_h)}) 내의 좌표만 허용됩니다."
                 ),
             )
 
@@ -371,6 +393,16 @@ def add_manual_object(
         raise HTTPException(
             status_code=400,
             detail="수동 추가 기구의 단위(unit)가 누락되었거나 공백입니다. 유효한 단위(예: 'EA', 'SET' 등)를 지정해야 합니다 (ADR-005).",
+        )
+
+    # IMG-03: On IMAGE drawings, manual objects MUST strictly have unit == "EA" (mapping-bypass prohibited)
+    if is_image and actual_unit != "EA":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"이미지 도면(IMAGE_PIXEL)의 수동 추가 기구는 P0 원칙(IMG-03/M-UNIT-01)상 'EA' 단위만 허용됩니다 "
+                f"(품목: '{item.item_code}', 요청 단위: '{item.unit}')."
+            ),
         )
 
     mappings = storage.get_mappings(project_id, drawing_id)

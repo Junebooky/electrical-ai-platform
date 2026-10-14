@@ -350,6 +350,11 @@ def build_takeoff_result(
         for m in mapping_rules
     ]
 
+    is_image_dwg = (
+        getattr(drawing, "source_type", None) == "IMAGE"
+        or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    )
+
     # Map item code to canonical metadata and detect cross-mapping attribute conflicts (ADR-005)
     item_meta, conflicted_codes = find_canonical_item_conflicts(mapping_rules)
 
@@ -556,7 +561,15 @@ def build_takeoff_result(
         is_conflicted = False
         conflict_reason = ""
 
-        if base_item_code in conflicted_codes:
+        # IMG-03 / M-UNIT-01: On IMAGE drawings, all manual objects and mapped targets MUST be EA-only
+        is_image_dwg = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+        if is_image_dwg and mo_u != "EA":
+            is_conflicted = True
+            conflict_reason = f"이미지 도면 수동 기구 단위('{mo.unit}') 비EA 불허 (IMG-03/M-UNIT-01: EA 전용)"
+        elif is_image_dwg and effective_code in item_meta and (item_meta[effective_code].unit or "").strip() != "EA":
+            is_conflicted = True
+            conflict_reason = f"이미지 도면 품목('{effective_code}') 매핑 단위('{item_meta[effective_code].unit}') 비EA 불허 (IMG-03)"
+        elif base_item_code in conflicted_codes:
             is_conflicted = True
             conflict_reason = f"수동 추가 기구 단위('{mo.unit}') 상충/결함 (P0 비EA 또는 단위 불일치)"
         elif effective_code in conflicted_codes:
@@ -575,7 +588,7 @@ def build_takeoff_result(
                 is_conflicted = True
                 conflict_reason = f"수동 전용 품목 재분류 단위('{mo.unit}') 비EA 불허 (P0 M-UNIT-01)"
 
-        if is_conflicted and (not override or override.inclusion_status in (InclusionStatus.INCLUDED, InclusionStatus.MANUAL_ADDED)):
+        if is_conflicted:
             inc_status = InclusionStatus.EXCLUDED
             rev_status = ReviewStatus.UNRESOLVED
             reason = conflict_reason
@@ -615,9 +628,12 @@ def build_takeoff_result(
 
         if ev.inclusion_status in (InclusionStatus.INCLUDED, InclusionStatus.MANUAL_ADDED):
             counts[code] = counts.get(code, 0) + 1
-            methods.setdefault(code, set()).add(
-                "MANUAL" if ev.inclusion_status == InclusionStatus.MANUAL_ADDED else "CAD_BLOCK"
+            is_manual_source = (
+                ev.inclusion_status == InclusionStatus.MANUAL_ADDED
+                or ev.entity_type == "MANUAL_POINT"
+                or ev.block_name == "[MANUAL]"
             )
+            methods.setdefault(code, set()).add("MANUAL" if is_manual_source else "CAD_BLOCK")
             review_states.setdefault(code, set()).add(ev.review_status)
         elif ev.review_status == ReviewStatus.UNRESOLVED:
             # AC-06 / FR-011: Excluded UNRESOLVED evidence (such as structural XREFs, missing blocks, unit conflict)
@@ -674,6 +690,11 @@ def build_takeoff_result(
             name = m_info.item_name if m_info and m_info.item_name else code
             spec = m_info.specification if m_info and m_info.specification else ""
             unit = m_info.unit if m_info and m_info.unit else "EA"
+
+            if is_image_dwg and unit.strip() != "EA":
+                qty = 0
+                r_status = ReviewStatus.UNRESOLVED
+                notes = f"이미지 도면 단위('{unit}') 비EA 불허 (IMG-03/M-UNIT-01: EA 전용) - 수량 산출 보류"
 
         summary_rows.append(
             TakeoffSummaryRow(
