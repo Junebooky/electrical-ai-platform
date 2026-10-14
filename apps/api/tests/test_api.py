@@ -1036,7 +1036,7 @@ def test_manual_item_canonical_unit_integrity_adr_005(client: TestClient) -> Non
     )
     drawing_id = upload_res.json()["drawing_id"]
 
-    # 1. (e) Empty unit rejection in mappings
+    # 1. (MUNIT-E) Empty unit rejection in mappings
     empty_map_res = client.put(
         f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
         json=[{"block_name": "LT-DL", "item_code": "LIGHT", "unit": ""}],
@@ -1044,7 +1044,7 @@ def test_manual_item_canonical_unit_integrity_adr_005(client: TestClient) -> Non
     assert empty_map_res.status_code == 400
     assert "단위(unit)가 누락되었거나 공백입니다" in empty_map_res.json()["detail"]
 
-    # 2. (e) Empty unit rejection in manual objects
+    # 2. (MUNIT-E) Empty unit rejection in manual objects
     empty_mo_res = client.post(
         f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
         json={
@@ -1059,87 +1059,74 @@ def test_manual_item_canonical_unit_integrity_adr_005(client: TestClient) -> Non
     assert empty_mo_res.status_code == 400
     assert "단위(unit)가 누락되었거나 공백입니다" in empty_mo_res.json()["detail"]
 
-    # 3. (a) Manual-only SET item: 1 item MUST output unit='SET' (NEVER 'EA') in Takeoff, CSV, and XLSX
-    mo_set1 = client.post(
+    # 3. (MUNIT-A / BLOCKER-1) Unmapped manual-only non-EA rejected with 400 and 0 saved
+    from eai_api.app import storage
+    mo_set_unmapped = client.post(
         f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
         json={
-            "id": "mo_panel_1",
+            "id": "mo_panel_unmapped",
             "drawing_id": drawing_id,
-            "item_code": "CUSTOM_PANEL",
-            "item_name": "주 분전반 세트",
+            "item_code": "CUSTOM_SET",
+            "item_name": "미매핑 분전반 세트",
             "unit": "SET",
             "x": 500.0,
             "y": 500.0,
-            "note": "현장 추가 분전반",
         },
     )
-    assert mo_set1.status_code == 200
+    assert mo_set_unmapped.status_code == 400
+    assert "P0 정책(M-UNIT-01)상 'EA' 단위만 허용됩니다" in mo_set_unmapped.json()["detail"]
+    assert len(storage.get_manual_objects(project_id, drawing_id)) == 0, "No manual objects should be saved on 400"
 
-    t1 = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
-    panel_row = next(r for r in t1["summary"] if r["item_code"] == "CUSTOM_PANEL")
-    assert panel_row["quantity"] == 1
-    assert panel_row["unit"] == "SET", "Manual-only item must output its actual canonical unit (SET), not hardcoded EA"
-    assert panel_row["quantity_method"] == "MANUAL"
-
-    # CSV Summary verification
-    csv_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=summary")
-    csv_text = csv_res.content.decode("utf-8-sig")
-    assert "CUSTOM_PANEL" in csv_text
-    assert ",SET,1,MANUAL," in csv_text or ",SET,1," in csv_text
-
-    # XLSX Summary verification
-    xlsx_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx")
-    wb = openpyxl.load_workbook(io.BytesIO(xlsx_res.content))
-    ws_sum = wb["Takeoff Summary"]
-    found_panel_row = False
-    for r in range(2, ws_sum.max_row + 1):
-        if ws_sum.cell(row=r, column=1).value == "CUSTOM_PANEL":
-            assert ws_sum.cell(row=r, column=4).value == "SET", "XLSX unit column must be SET"
-            assert ws_sum.cell(row=r, column=5).value == 1
-            found_panel_row = True
-    assert found_panel_row is True
-
-    # 4. (b) Defense against mixing EA/SET on the same manual item code via API
-    mo_set_bad = client.post(
+    # 4. (MUNIT-B & MUNIT-H) Normal manual-only CUSTOM_EA with unit='EA' allowed and coordinates preserved
+    mo_ea_valid = client.post(
         f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
         json={
-            "id": "mo_panel_2_bad",
+            "id": "mo_custom_ea",
             "drawing_id": drawing_id,
-            "item_code": "CUSTOM_PANEL",
-            "item_name": "주 분전반 세트",
-            "unit": "EA",  # Collides with existing SET!
-            "x": 600.0,
-            "y": 600.0,
+            "item_code": "CUSTOM_EA",
+            "item_name": "수동 추가 전등",
+            "unit": "EA",
+            "x": 123.4,
+            "y": 567.8,
+            "note": "현장 추가 조명",
         },
     )
-    assert mo_set_bad.status_code == 400
-    assert "기존 등록된 수동 기구의 정규 단위('SET')와 상충합니다" in mo_set_bad.json()["detail"]
+    assert mo_ea_valid.status_code == 200
 
-    # 5. (b) Defense against legacy tampered storage mixing EA/SET for manual items
-    from eai_api.app import storage
-    drawings_dir = storage.projects_dir / project_id / "drawings" / drawing_id
-    tampered_manual = [
-        {"id": "man_1", "drawing_id": drawing_id, "item_code": "CONF_MAN", "unit": "SET", "x": 10.0, "y": 10.0},
-        {"id": "man_2", "drawing_id": drawing_id, "item_code": "CONF_MAN", "unit": "EA", "x": 20.0, "y": 20.0},
-    ]
-    (drawings_dir / "manual_objects.json").write_text(json.dumps(tampered_manual), encoding="utf-8")
+    t_b = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    custom_ea_row = next(r for r in t_b["summary"] if r["item_code"] == "CUSTOM_EA")
+    assert custom_ea_row["quantity"] == 1
+    assert custom_ea_row["unit"] == "EA"
+    assert custom_ea_row["quantity_method"] == "MANUAL"
 
-    t_tampered = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
-    conf_man_row = next(r for r in t_tampered["summary"] if r["item_code"] == "CONF_MAN")
-    assert conf_man_row["quantity"] == 0, "Conflicting units on manual item MUST NOT be summed"
-    assert conf_man_row["review_status"] == "UNRESOLVED"
-    assert "품목 정의 충돌" in conf_man_row["notes"]
-    assert conf_man_row["unit"] == "[상충 단위 충돌]"
+    custom_ea_ev = next(e for e in t_b["evidence"] if e["source_object_id"] == "mo_custom_ea")
+    assert custom_ea_ev["x"] == 123.4
+    assert custom_ea_ev["y"] == 567.8
+    assert custom_ea_ev["inclusion_status"] == "MANUAL_ADDED"
 
-    # 6. (c) Valid manual object addition for mapped SET items
-    # Clean manual objects and set mapping with SET
-    (drawings_dir / "manual_objects.json").write_text("[]", encoding="utf-8")
+    # 5. (MUNIT-C) Mapped OUTLET_SET with unit='SET' in mappings accepts manual SET additions
     client.put(
         f"/api/projects/{project_id}/drawings/{drawing_id}/mappings",
         json=[
             {"block_name": "OT-2P", "item_code": "OUTLET_SET", "unit": "SET", "specification": "매입 2구 콘센트 세트"},
         ],
     )
+    # Mismatched unit for mapped item rejected with 400
+    mo_bad_unit = client.post(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "mo_outlet_set_bad",
+            "drawing_id": drawing_id,
+            "item_code": "OUTLET_SET",
+            "unit": "EA",  # Mapped item is SET!
+            "x": 300.0,
+            "y": 300.0,
+        },
+    )
+    assert mo_bad_unit.status_code == 400
+    assert "도면 매핑 정규 단위('SET')와 일치하지 않습니다" in mo_bad_unit.json()["detail"]
+
+    # Valid SET addition for mapped item
     mo_valid_set = client.post(
         f"/api/projects/{project_id}/drawings/{drawing_id}/manual-objects",
         json={
@@ -1154,12 +1141,92 @@ def test_manual_item_canonical_unit_integrity_adr_005(client: TestClient) -> Non
     )
     assert mo_valid_set.status_code == 200
 
-    t_mixed_set = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
-    outlet_set_row = next(r for r in t_mixed_set["summary"] if r["item_code"] == "OUTLET_SET")
+    t_c = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    outlet_set_row = next(r for r in t_c["summary"] if r["item_code"] == "OUTLET_SET")
     # basic_devices.dxf has 4 OT-2P blocks + 1 manual = 5 SET!
     assert outlet_set_row["quantity"] == 5
     assert outlet_set_row["unit"] == "SET"
     assert outlet_set_row["quantity_method"] == "MIXED"
+
+    # 6. (MUNIT-D / BLOCKER-2) Review override unit mismatch defense: EA manual reclassified to mapped SET code
+    # API layer defense: PUT /reviews with mismatched unit returns 400 Bad Request
+    rev_bad_res = client.put(
+        f"/api/projects/{project_id}/drawings/{drawing_id}/reviews",
+        json=[
+            {
+                "source_object_id": "mo_custom_ea",
+                "inclusion_status": "INCLUDED",
+                "review_status": "REVIEWED",
+                "mapped_item_code": "OUTLET_SET",
+                "reason": "단위 상충 재분류 시도",
+            }
+        ],
+    )
+    assert rev_bad_res.status_code == 400
+    assert "단위('EA')와 재분류 대상 품목('OUTLET_SET')의 정규 단위('SET')가 상충합니다" in rev_bad_res.json()["detail"]
+
+    # Storage fail-closed defense: Tampered/legacy reviews in storage must be isolated to EXCLUDED + UNRESOLVED
+    drawings_dir = storage.projects_dir / project_id / "drawings" / drawing_id
+    tampered_reviews = {
+        "mo_custom_ea": {
+            "source_object_id": "mo_custom_ea",
+            "inclusion_status": "INCLUDED",
+            "mapped_item_code": "OUTLET_SET",
+            "review_status": "REVIEWED",
+            "reason": "레거시 저장 상충 검수",
+        }
+    }
+    (drawings_dir / "reviews.json").write_text(json.dumps(tampered_reviews), encoding="utf-8")
+
+    t_d = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    # OUTLET_SET quantity must NOT include the conflicted EA object (still exactly 5 SET from 4 CAD + 1 valid manual SET)
+    outlet_set_d = next(r for r in t_d["summary"] if r["item_code"] == "OUTLET_SET")
+    assert outlet_set_d["quantity"] == 5
+    assert outlet_set_d["unit"] == "SET"
+    assert outlet_set_d["review_status"] == "UNRESOLVED", "Unresolved conflicting review must flag overall item status"
+
+    conflicted_ev = next(e for e in t_d["evidence"] if e["source_object_id"] == "mo_custom_ea")
+    assert conflicted_ev["inclusion_status"] == "EXCLUDED"
+    assert conflicted_ev["review_status"] == "UNRESOLVED"
+    assert "상충 (MUNIT-D)" in conflicted_ev["review_reason"]
+
+    # Verify CSV and XLSX deep exports reflect consistent quantities and unresolved states
+    csv_sum_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=summary")
+    csv_sum_text = csv_sum_res.content.decode("utf-8-sig")
+    assert "OUTLET_SET" in csv_sum_text
+    assert ",SET,5,MIXED,UNRESOLVED," in csv_sum_text
+
+    csv_ev_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/csv?type=evidence")
+    csv_ev_text = csv_ev_res.content.decode("utf-8-sig")
+    assert "mo_custom_ea" in csv_ev_text
+    assert "EXCLUDED,UNRESOLVED" in csv_ev_text
+
+    xlsx_res = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/export/xlsx")
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_res.content))
+    ws_sum = wb["Takeoff Summary"]
+    found_outlet_row = False
+    for r in range(2, ws_sum.max_row + 1):
+        if ws_sum.cell(row=r, column=1).value == "OUTLET_SET":
+            assert ws_sum.cell(row=r, column=4).value == "SET"
+            assert ws_sum.cell(row=r, column=5).value == 5
+            assert ws_sum.cell(row=r, column=7).value == "UNRESOLVED"
+            found_outlet_row = True
+    assert found_outlet_row is True
+
+    # 7. (MUNIT-F) Defense against legacy tampered storage mixing EA/SET or unmapped non-EA for manual items
+    (drawings_dir / "reviews.json").write_text("{}", encoding="utf-8")
+    tampered_manual = [
+        {"id": "man_1", "drawing_id": drawing_id, "item_code": "CONF_MAN", "unit": "SET", "x": 10.0, "y": 10.0},
+        {"id": "man_2", "drawing_id": drawing_id, "item_code": "CONF_MAN", "unit": "EA", "x": 20.0, "y": 20.0},
+    ]
+    (drawings_dir / "manual_objects.json").write_text(json.dumps(tampered_manual), encoding="utf-8")
+
+    t_tampered = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/takeoff").json()
+    conf_man_row = next(r for r in t_tampered["summary"] if r["item_code"] == "CONF_MAN")
+    assert conf_man_row["quantity"] == 0, "Conflicting units on manual item MUST NOT be summed"
+    assert conf_man_row["review_status"] == "UNRESOLVED"
+    assert "품목 정의 충돌" in conf_man_row["notes"]
+    assert conf_man_row["unit"] == "[상충 단위 충돌]", "Must not quietly display 0 EA or confirmed unit"
 
 
 

@@ -16,6 +16,7 @@ from .exporter import export_csv_evidence, export_csv_summary, export_xlsx
 from .models import (
     DrawingSummary,
     EvidenceReviewItem,
+    InclusionStatus,
     ItemMappingRule,
     ManualObjectItem,
     ProjectCreate,
@@ -208,6 +209,47 @@ def save_reviews(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    mappings = storage.get_mappings(project_id, drawing_id)
+    canon_defs = {m.item_code: m for m in mappings if m.item_code not in ("EXCLUDE", "UNMAPPED")}
+    manual_objs = {mo.id: mo for mo in storage.get_manual_objects(project_id, drawing_id)}
+    cad_objs = {obj.id: obj for obj in drawing.objects if obj.entity_type == "INSERT"}
+
+    # MUNIT-D: Validate unit consistency on review reclassification
+    for r in reviews:
+        if not r.mapped_item_code or r.mapped_item_code in ("EXCLUDE", "UNMAPPED"):
+            continue
+
+        target_unit = (canon_defs[r.mapped_item_code].unit or "EA").strip() if r.mapped_item_code in canon_defs else "EA"
+
+        if r.source_object_id in manual_objs:
+            mo = manual_objs[r.source_object_id]
+            mo_unit = (mo.unit or "EA").strip()
+            if r.inclusion_status in (InclusionStatus.INCLUDED, InclusionStatus.MANUAL_ADDED) and mo_unit != target_unit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"수동 객체('{mo.id}')의 단위('{mo_unit}')와 재분류 대상 품목('{r.mapped_item_code}')의 "
+                        f"정규 단위('{target_unit}')가 상충합니다 (MUNIT-D)."
+                    ),
+                )
+        elif r.source_object_id in cad_objs:
+            cad_obj = cad_objs[r.source_object_id]
+            base_rule = next(
+                (m for m in mappings if m.block_name == cad_obj.block_name and (not m.layer or m.layer == cad_obj.layer)),
+                None,
+            )
+            if base_rule and base_rule.item_code in canon_defs:
+                base_unit = (canon_defs[base_rule.item_code].unit or "EA").strip()
+                if r.inclusion_status in (InclusionStatus.INCLUDED, InclusionStatus.MANUAL_ADDED) and base_unit != target_unit:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"CAD 객체('{r.source_object_id}')의 기존 매핑 단위('{base_unit}')와 "
+                            f"재분류 대상 품목('{r.mapped_item_code}')의 정규 단위('{target_unit}')가 상충합니다 (MUNIT-D)."
+                        ),
+                    )
+
     current = storage.get_reviews(project_id, drawing_id)
     for r in reviews:
         current[r.source_object_id] = r
@@ -226,7 +268,7 @@ def add_manual_object(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
-    # ADR-005: Validate non-empty unit
+    # ADR-005 / MUNIT-E: Validate non-empty unit
     actual_unit = (item.unit or "").strip()
     if not actual_unit:
         raise HTTPException(
@@ -249,18 +291,15 @@ def add_manual_object(
                 ),
             )
     else:
-        # ADR-005: For manual-only items, enforce consistent unit across manual instances
-        same_code_manual = [o for o in objs if o.item_code == item.item_code and (o.unit or "").strip()]
-        if same_code_manual:
-            expected_unit = (same_code_manual[0].unit or "EA").strip()
-            if expected_unit != actual_unit:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"수동 추가 기구의 단위('{item.unit}')가 기존 등록된 수동 기구의 정규 단위('{expected_unit}')와 "
-                        f"상충합니다 (ADR-005)."
-                    ),
-                )
+        # P0 policy (M-UNIT-01 / BLOCKER-1): Manual-only items MUST be 'EA'. Non-EA (SET, M, etc.) is rejected with 400.
+        if actual_unit != "EA":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"매핑되지 않은 수동 전용 품목('{item.item_code}')은 P0 정책(M-UNIT-01)상 'EA' 단위만 허용됩니다 "
+                    f"(요청 단위: '{item.unit}')."
+                ),
+            )
 
     objs.append(item)
     storage.save_manual_objects(project_id, drawing_id, objs)

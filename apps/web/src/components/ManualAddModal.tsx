@@ -32,7 +32,6 @@ function ManualAddModalInner({
   const [reason, setReason] = useState<string>("");
   const [note, setNote] = useState<string>("");
   const [customItemCode, setCustomItemCode] = useState<string>("");
-  const [customUnit, setCustomUnit] = useState<string>("EA");
   const [isCustomItem, setIsCustomItem] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
@@ -57,7 +56,7 @@ function ManualAddModalInner({
     setSubmitAttempted(true);
     if (!isValid || isSaving) return;
     const selected = availableItems.find((i) => i.code === effectiveItemCode);
-    const unit = isCustomItem ? (customUnit.trim() || "EA") : (selected?.unit || "EA");
+    const unit = isCustomItem ? "EA" : (selected?.unit || "EA").trim();
     await onConfirm(effectiveItemCode, reason, note.trim(), unit);
   };
 
@@ -141,33 +140,35 @@ function ManualAddModalInner({
                 <option value="__CUSTOM__">+ 직접 품목코드 입력</option>
               </select>
             ) : (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="품목코드 직접 입력 (예: LIGHT-SPEC)"
-                  value={customItemCode}
-                  onChange={(e) => setCustomItemCode(e.target.value)}
-                  className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                />
-                <input
-                  type="text"
-                  placeholder="단위 (기본: EA)"
-                  value={customUnit}
-                  onChange={(e) => setCustomUnit(e.target.value)}
-                  className="w-24 px-3 py-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                  title="산출 단위"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsCustomItem(false);
-                    setCustomItemCode("");
-                    setCustomUnit("EA");
-                  }}
-                  className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
-                >
-                  목록 선택
-                </button>
+              <div className="space-y-1.5">
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="품목코드 직접 입력 (예: LIGHT-CUSTOM)"
+                    value={customItemCode}
+                    onChange={(e) => setCustomItemCode(e.target.value)}
+                    className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                  <span
+                    className="px-3 py-2 bg-slate-950 border border-slate-800 rounded text-xs text-slate-300 font-mono whitespace-nowrap"
+                    title="P0 정책: 미매핑 수동 전용 품목은 EA 단위로 고정됩니다 (M-UNIT-01)"
+                  >
+                    단위: <strong className="text-amber-400 font-semibold">EA</strong> (P0 고정)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomItem(false);
+                      setCustomItemCode("");
+                    }}
+                    className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
+                  >
+                    목록 선택
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  * 도면 매핑에 없는 신규 품목은 P0 최소 계약(M-UNIT-01)에 따라 <span className="text-amber-400 font-semibold">EA</span> 단위로만 등록됩니다.
+                </p>
               </div>
             )}
             {!isCustomItem && itemCode && (

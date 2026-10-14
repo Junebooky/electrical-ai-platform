@@ -251,14 +251,14 @@ export default function WorkspacePage() {
     itemCode: string,
     reason: string,
     note: string,
-    customUnit?: string
+    selectedUnit?: string
   ) => {
     if (!currentProject || !currentDrawing || !pendingManualCoord) return;
     setIsSaving(true);
     try {
       const manualId = `manual_${Date.now()}`;
       const matched = availableItems.find((i) => i.code === itemCode);
-      const unit = matched?.unit || customUnit || "EA";
+      const unit = matched ? (matched.unit || "EA").trim() : (selectedUnit?.trim() || "EA");
       await api.addManualObject(currentProject.id, currentDrawing.drawing_id, {
         id: manualId,
         drawing_id: currentDrawing.drawing_id,

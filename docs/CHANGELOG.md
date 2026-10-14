@@ -33,5 +33,5 @@ All notable changes to the Electrical AI Platform are documented here.
   - Review override defense rejecting `INCLUDED` on dynamic/anonymous blocks (`QA-09-C`).
   - Strict withholding of nested hierarchy (both parents and children) from CAD auto count (`QA-09-D`), with verified installations tracked via manual objects (`MIXED` takeoff).
   - End-to-end ADR-005 canonical item contract across API and Engine: full attribute propagation to `BlockMapping`, 400 Bad Request on conflicting units/specifications across rules, and fail-closed legacy isolation with provisional export headers.
-  - Manual object canonical unit boundary: strict prohibition of empty/whitespace units, mandatory validation against CAD canonical units, single-unit enforcement for manual-only items, fail-closed handling (`UNRESOLVED` & 0 qty) on storage conflicts, and full UI unit sync in `ManualAddModal`.
+  - Manual object canonical unit boundary: strict prohibition of empty/whitespace units, mandatory validation against CAD canonical units, P0 manual-only item 'EA' restriction (M-UNIT-01), review override unit reclassification validation across API (400) and storage (MUNIT-D), fail-closed handling (`UNRESOLVED` & 0 qty) on storage conflicts, and full UI unit sync in `ManualAddModal`.
 
