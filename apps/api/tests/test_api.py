@@ -64,6 +64,28 @@ def test_parse_direct_and_errors(client: TestClient) -> None:
     assert len(data["objects"]) == 18
 
 
+def test_r12_malformed_lwpolyline_upload_returns_actionable_error(client: TestClient) -> None:
+    """Issue #15: API upload of R12 file with LWPOLYLINE missing AcDbPolyline returns 400 with actionable diagnosis."""
+    proj_res = client.post("/api/projects", json={"name": "R12 비표준 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    fixture_path = Path("packages/cad_engine/tests/fixtures/r12_malformed_lwpolyline.dxf")
+    res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("r12_malformed_lwpolyline.dxf", fixture_path.read_bytes(), "application/octet-stream")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["code"] == "DXF_STRUCTURE_ERROR"
+    # Actionable guidance must be present in both message and detail
+    assert "AutoCAD R12(AC1009)" in data["message"]
+    assert "LWPOLYLINE" in data["message"]
+    assert "AcDbPolyline" in data["message"]
+    assert "AutoCAD 2000 DXF(AC1015)" in data["message"]
+    assert "다시 저장(Save As)" in data["message"]
+    assert data["detail"] == data["detail"]  # non-null
+
+
 def test_full_takeoff_lifecycle(client: TestClient) -> None:
     # 1. Create project
     proj_res = client.post("/api/projects", json={"name": "테스트 전기공사 프로젝트"})

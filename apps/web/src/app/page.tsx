@@ -445,10 +445,10 @@ export default function WorkspacePage() {
 
       {/* Global Error Banner */}
       {errorMessage && (
-        <div className="bg-red-950/80 border-b border-red-800 px-4 py-2 text-xs text-red-200 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertCircle size={15} className="text-red-400 shrink-0" />
-            <span>{errorMessage}</span>
+        <div id="global-error-banner" className="bg-red-950/90 border-b border-red-700/80 px-4 py-2.5 text-xs text-red-200 flex items-center justify-between shadow-lg">
+          <div className="flex items-start gap-2.5 max-w-[90%]">
+            <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
+            <span className="leading-relaxed font-sans">{errorMessage}</span>
           </div>
           <button
             onClick={() => setErrorMessage(null)}
