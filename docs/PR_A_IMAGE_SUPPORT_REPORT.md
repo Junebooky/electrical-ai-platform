@@ -4,7 +4,7 @@
 - **관련 이슈:** [GitHub Issue #12](https://github.com/Junebooky/electrical-ai-platform/issues/12)
 - **대상 브랜치:** `feat/issue-12-image-pdf-support` (PR #1 동결 보호)
 - **테스트 일시:** 2026-10-14
-- **검증 상태:** **전체 통과 (ALL GREEN)**
+- **검증 상태:** **GitHub Actions CI (Python/Next) 통과 & A02 로컬 브라우저 E2E 검증 완료 (독립 A01/QA 절차 대기)**
 
 ---
 
@@ -70,7 +70,7 @@ Chrome 브라우저 자동화 스크립트(`apps/web/scripts/e2e_image_runner.mj
 - FR-016 준수 안내 배너: "v1.1 이미지 모드: 래스터 이미지 도면은 자동 기호 인식이 제공되지 않으며..."
 - SVG 캔버스 내 래스터 이미지 및 픽셀 좌표계(`IMAGE (픽셀 좌표계)`) 정상 동기화
 
-![12_image_drawing_loaded](/Users/gotow/Documents/neonfamily101/electrical-ai-platform/docs/screenshots/12_image_drawing_loaded.png)
+![12_image_drawing_loaded](docs/screenshots/12_image_drawing_loaded.png)
 
 ---
 
@@ -83,7 +83,7 @@ Chrome 브라우저 자동화 스크립트(`apps/web/scripts/e2e_image_runner.mj
   - `SWITCH`: 1 EA, `MANUAL`, `검수완료`
   - 합계: 4 EA (잠정 4개)
 
-![13_image_takeoff_calculated](/Users/gotow/Documents/neonfamily101/electrical-ai-platform/docs/screenshots/13_image_takeoff_calculated.png)
+![13_image_takeoff_calculated](docs/screenshots/13_image_takeoff_calculated.png)
 
 ---
 
@@ -92,7 +92,7 @@ Chrome 브라우저 자동화 스크립트(`apps/web/scripts/e2e_image_runner.mj
 - 원본 좌표 `(279, 244)`, 상태 `MANUAL_ADDED`, 검수 사유 `[도면 누락] 수동 추가` 바인딩
 - 수동 기구 삭제 및 품목 재분류 제어 정상 동작
 
-![14_image_review_drawer_opened](/Users/gotow/Documents/neonfamily101/electrical-ai-platform/docs/screenshots/14_image_review_drawer_opened.png)
+![14_image_review_drawer_opened](docs/screenshots/14_image_review_drawer_opened.png)
 
 ---
 
@@ -100,7 +100,7 @@ Chrome 브라우저 자동화 스크립트(`apps/web/scripts/e2e_image_runner.mj
 - 페이지 전체 새로고침 후 로컬 스토리지 및 백엔드 저장소 동기화
 - 4개 수동 마커, 뷰어 줌/팬 좌표, 적산 결과표(LIGHT 2, OUTLET 1, SWITCH 1) 무손실 복원
 
-![15_image_reload_persistence](/Users/gotow/Documents/neonfamily101/electrical-ai-platform/docs/screenshots/15_image_reload_persistence.png)
+![15_image_reload_persistence](docs/screenshots/15_image_reload_persistence.png)
 
 ---
 

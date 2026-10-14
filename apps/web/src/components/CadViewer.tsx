@@ -21,6 +21,7 @@ interface CadViewerProps {
   onSelectObject: (objectId: string | null) => void;
   isAddManualMode?: boolean;
   onAddManualPoint?: (x: number, y: number) => void;
+  onOutOfBoundsClick?: (x: number, y: number, maxX: number, maxY: number) => void;
   manualMarkers?: ManualMarker[];
   imageUrl?: string | null;
 }
@@ -33,6 +34,7 @@ export function CadViewer({
   onSelectObject,
   isAddManualMode = false,
   onAddManualPoint,
+  onOutOfBoundsClick,
   manualMarkers = [],
   imageUrl,
 }: CadViewerProps) {
@@ -169,6 +171,16 @@ export function CadViewer({
           const mouseY = e.clientY - rect.top;
           const wx = (mouseX - pan.x) / scale;
           const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+
+          if (isImage) {
+            if (wx < 0 || wx > imgWidth || wy < 0 || wy > imgHeight) {
+              onOutOfBoundsClick?.(wx, wy, imgWidth, imgHeight);
+              setIsDragging(false);
+              dragStartPos.current = null;
+              return;
+            }
+          }
+
           onAddManualPoint(
             isImage ? Math.round(wx) : Math.round(wx * 100) / 100,
             isImage ? Math.round(wy) : Math.round(wy * 100) / 100
@@ -265,6 +277,11 @@ export function CadViewer({
         </span>
         <span className="text-slate-500">|</span>
         <span>{isImage ? "IMAGE (픽셀 좌표계)" : drawing.dxf.units_name}</span>
+        {isImage && isAddManualMode && (
+          <span className={mouseWorld.x < 0 || mouseWorld.x > imgWidth || mouseWorld.y < 0 || mouseWorld.y > imgHeight ? "text-amber-400 font-semibold" : "text-emerald-400 font-semibold"}>
+            {mouseWorld.x < 0 || mouseWorld.x > imgWidth || mouseWorld.y < 0 || mouseWorld.y > imgHeight ? "⚠ 도면 영역 밖 (추가 불가)" : "✓ 도면 내부"}
+          </span>
+        )}
       </div>
 
       {/* SVG Canvas */}

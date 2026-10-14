@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import urllib.parse
 import uuid
@@ -343,6 +344,26 @@ def add_manual_object(
     drawing = storage.get_drawing(project_id, drawing_id)
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    # High-2 Defense: Strict coordinate bounds for IMAGE drawings
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    if is_image:
+        dims = getattr(drawing, "dimensions", None) or {}
+        img_w = float(dims.get("width") or (drawing.extents.max[0] if drawing.extents else 0))
+        img_h = float(dims.get("height") or (drawing.extents.max[1] if drawing.extents else 0))
+        if not (math.isfinite(item.x) and math.isfinite(item.y)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"수동 추가 좌표가 유효한 유한수(finite number)가 아닙니다 (x={item.x}, y={item.y}).",
+            )
+        if item.x < 0.0 or item.x > img_w or item.y < 0.0 or item.y > img_h:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"수동 추가 기구 좌표(x={item.x}, y={item.y})가 "
+                    f"이미지 도면의 픽셀 경계(가로 0~{int(img_w)}, 세로 0~{int(img_h)})를 벗어났습니다."
+                ),
+            )
 
     # ADR-005 / MUNIT-E: Validate non-empty unit
     actual_unit = (item.unit or "").strip()

@@ -505,6 +505,11 @@ export default function WorkspacePage() {
                 onSelectObject={(id) => setSelectedObjectId(id)}
                 isAddManualMode={isAddManualMode}
                 onAddManualPoint={handleAddManualPoint}
+                onOutOfBoundsClick={(x, y, maxX, maxY) => {
+                  setErrorMessage(
+                    `도면 밖 좌표(X: ${Math.round(x)}, Y: ${Math.round(y)})에는 기구를 추가할 수 없습니다. 유효 도면 범위: 0~${maxX} × 0~${maxY}px`
+                  );
+                }}
                 manualMarkers={manualMarkers}
                 imageUrl={
                   currentDrawing.source_type === "IMAGE" && currentProject

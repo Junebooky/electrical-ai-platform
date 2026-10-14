@@ -146,12 +146,52 @@ async function run() {
     await addMarkerAt(450, 340, "SWITCH");
     console.log("  ✓ Added SWITCH marker");
 
+    // Test Out-of-bounds Defense (HIGH-2 criteria)
+    console.log("  [Defense] Testing out-of-bounds click rejection...");
+    const b4 = await page.waitForSelector("button::-p-text(누락 기구 수동 추가)");
+    await b4.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const container = await page.$(".relative.w-full.h-full.overflow-hidden");
+    const cBox = await container.boundingBox();
+    // Click outside top-left margin (e.g., inside container near extreme corner outside SVG image)
+    // Zoom in or pan, or click at container edge x=5, y=5 where pixel coords are negative
+    await page.mouse.click(cBox.x + 5, cBox.y + 5);
+    await new Promise((r) => setTimeout(r, 600));
+    // Verify modal does NOT open and error/status warns user
+    const modalExists = await page.$("#manual-item-select");
+    if (modalExists) {
+      throw new Error("Out-of-bounds click erroneously opened manual item modal!");
+    }
+    console.log("  ✓ Out-of-bounds click safely ignored/blocked.");
+
     // Wait for takeoff calculation
     await page.waitForFunction(
       () => document.body.innerText.includes("LIGHT") && document.body.innerText.includes("OUTLET"),
       { timeout: 8000 }
     );
     await new Promise((r) => setTimeout(r, 1000));
+
+    // Assert exact quantities in Takeoff Table
+    const quantities = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("tbody tr"));
+      const map = {};
+      for (const row of rows) {
+        const cells = Array.from(row.querySelectorAll("td")).map((c) => c.innerText.trim());
+        if (cells.length >= 4) {
+          const match = cells[3].match(/^(\d+)\s*(\S+)?/);
+          const qty = match ? parseInt(match[1], 10) : 0;
+          const unit = match && match[2] ? match[2] : "EA";
+          map[cells[0]] = { name: cells[1], unit: unit, qty: qty };
+        }
+      }
+      return map;
+    });
+
+    console.log("  ✓ Takeoff Table Quantities:", JSON.stringify(quantities));
+    if (quantities["LIGHT"]?.qty !== 2) throw new Error(`Expected LIGHT qty 2, got ${quantities["LIGHT"]?.qty}`);
+    if (quantities["OUTLET"]?.qty !== 1) throw new Error(`Expected OUTLET qty 1, got ${quantities["OUTLET"]?.qty}`);
+    if (quantities["SWITCH"]?.qty !== 1) throw new Error(`Expected SWITCH qty 1, got ${quantities["SWITCH"]?.qty}`);
+    if (quantities["LIGHT"]?.unit !== "EA") throw new Error(`Expected unit EA, got ${quantities["LIGHT"]?.unit}`);
 
     // Screenshot 2: Manual Markers on Image & Takeoff Table
     const shot2 = path.join(SCREENSHOTS_DIR, "13_image_takeoff_calculated.png");
@@ -160,7 +200,7 @@ async function run() {
 
     // Step 4: Open Review Drawer by clicking marker or evidence row
     console.log("[4/6] Inspecting manual marker evidence in Review Drawer...");
-    const markerTarget = await page.$('.interactive-marker');
+    const markerTarget = await page.$(".interactive-marker");
     if (markerTarget) {
       await markerTarget.click();
       await new Promise((r) => setTimeout(r, 800));
@@ -171,14 +211,14 @@ async function run() {
     await page.screenshot({ path: shot3, fullPage: false });
     console.log(`  ✓ Captured: ${shot3}`);
 
-    // Step 5: Verify Exports
+    // Step 5: Verify Exports (CSV Summary, CSV Evidence, XLSX)
     console.log("[5/6] Verifying CSV & XLSX export responses...");
     const csvSummaryValid = await page.evaluate(async () => {
       const a = document.querySelector('a[href*="type=summary"]');
       if (!a) return false;
       const res = await fetch(a.href);
       const text = await res.text();
-      return text.includes("LIGHT") && text.includes("MANUAL");
+      return text.includes("LIGHT") && text.includes("MANUAL") && text.includes("EA,2");
     });
     console.log(`  ✓ CSV Summary validation: ${csvSummaryValid ? "PASS" : "FAIL"}`);
 
@@ -191,7 +231,16 @@ async function run() {
     });
     console.log(`  ✓ CSV Evidence validation: ${csvEvidenceValid ? "PASS" : "FAIL"}`);
 
-    if (!csvSummaryValid || !csvEvidenceValid) {
+    const xlsxValid = await page.evaluate(async () => {
+      const a = document.querySelector('a[href*="/export/xlsx"]');
+      if (!a) return false;
+      const res = await fetch(a.href);
+      const blob = await res.blob();
+      return res.status === 200 && blob.size > 2000;
+    });
+    console.log(`  ✓ XLSX Export validation: ${xlsxValid ? "PASS" : "FAIL"}`);
+
+    if (!csvSummaryValid || !csvEvidenceValid || !xlsxValid) {
       throw new Error("Export verification failed");
     }
 
@@ -204,6 +253,15 @@ async function run() {
       () => document.body.innerText.includes("floorplan_sample.png") && document.body.innerText.includes("LIGHT"),
       { timeout: 10000 }
     );
+
+    // Verify persisted marker count is exactly 4
+    const reloadedMarkers = await page.evaluate(() => {
+      return document.querySelectorAll(".interactive-marker").length;
+    });
+    console.log(`  ✓ Persisted interactive markers count: ${reloadedMarkers}`);
+    if (reloadedMarkers !== 4) {
+      throw new Error(`Expected 4 persisted markers, found ${reloadedMarkers}`);
+    }
 
     // Screenshot 4: Reload Persistence Verified
     const shot4 = path.join(SCREENSHOTS_DIR, "15_image_reload_persistence.png");
