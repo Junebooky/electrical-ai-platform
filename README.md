@@ -28,13 +28,31 @@
 
 ---
 
-## 2. 빠른 시작 (Local Setup)
+## 2. 빠른 시작 (Quick Start)
 
-### 사전 준비물
+### 🚀 원클릭 시연 실행 (추천)
+단 한 번의 명령으로 사전 점검, 백엔드 API, 프론트엔드 웹 앱을 동시에 실행합니다:
+
+```bash
+# 로컬 개발 및 시연 서버 원클릭 실행 (macOS / Linux)
+./scripts/dev-start.sh
+```
+
+- 실행 후 브라우저에서 **`http://localhost:3000`** 접속
+- API Swagger 문서: **`http://127.0.0.1:8000/docs`**
+- 대표 샘플 도면: **`fixtures/dxf/basic_devices.dxf`**
+- **PO 8단계 시연 가이드:** [`docs/USER_SMOKE_TEST.md`](docs/USER_SMOKE_TEST.md)
+- 서버 종료: 터미널에서 `Ctrl + C` 또는 `./scripts/dev-stop.sh`
+
+---
+
+### 수동 실행 (Manual Setup)
+
+#### 사전 준비물
 - Python 3.12+ 및 [`uv`](https://github.com/astral-sh/uv)
 - Node.js 20+ 및 `npm`
 
-### 1) 의존성 설치
+#### 1) 의존성 설치
 ```bash
 # Python 백엔드 및 cad_engine
 uv sync
@@ -43,13 +61,13 @@ uv sync
 npm --prefix apps/web install
 ```
 
-### 2) 백엔드 API 서버 실행 (포트 8000)
+#### 2) 백엔드 API 서버 실행 (포트 8000)
 ```bash
 # 로컬 단일 사용자 보안 정책에 따라 127.0.0.1 루프백 바인딩을 기본 권장합니다.
 PYTHONPATH=apps/api/src:packages/cad_engine/src uv run uvicorn eai_api.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 3) 프론트엔드 웹 앱 실행 (포트 3000)
+#### 3) 프론트엔드 웹 앱 실행 (포트 3000)
 ```bash
 npm --prefix apps/web run dev
 ```

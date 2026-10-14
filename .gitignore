@@ -26,5 +26,6 @@ out/
 Thumbs.db
 .idea/
 .vscode/
-*.swp
-*.swo
+# Test results & screenshots cache
+apps/web/test-results/
+.tempmediaStorage/
