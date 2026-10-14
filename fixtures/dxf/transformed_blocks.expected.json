@@ -1,0 +1,92 @@
+{
+  "description": "이동·회전·비균일 축척·대칭(음수 축척)·기준점 오프셋 블록",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "ARROW": 1,
+    "LT-DL": 3
+  },
+  "nested_inserts": {},
+  "warnings": [],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "LT-DL",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {
+    "LIGHT": 3
+  },
+  "expected_unresolved": 0,
+  "expected_unmapped": 1,
+  "insert_checks": [
+    {
+      "block": "ARROW",
+      "x": 1000,
+      "y": 500,
+      "rotation": 90,
+      "bbox": [
+        [
+          980,
+          500
+        ],
+        [
+          1000,
+          700
+        ]
+      ]
+    },
+    {
+      "block": "LT-DL",
+      "x": 2000,
+      "y": 0,
+      "bbox": [
+        [
+          1700,
+          -150
+        ],
+        [
+          2300,
+          150
+        ]
+      ]
+    },
+    {
+      "block": "LT-DL",
+      "x": 3000,
+      "y": 0,
+      "rotation": 180,
+      "bbox": [
+        [
+          2850,
+          -150
+        ],
+        [
+          3150,
+          150
+        ]
+      ]
+    },
+    {
+      "block": "LT-DL",
+      "x": 4000,
+      "y": 0,
+      "rotation": 45,
+      "bbox": [
+        [
+          3925,
+          -75
+        ],
+        [
+          4075,
+          75
+        ]
+      ]
+    }
+  ],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

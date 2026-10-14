@@ -1,0 +1,19 @@
+{
+  "filename": "fake_dwg.dxf",
+  "description": "확장자는 .dxf지만 DWG 시그니처",
+  "expect_error": "DWG_NOT_SUPPORTED",
+  "insunits": null,
+  "encoding": null,
+  "top_level_inserts": {},
+  "nested_inserts": {},
+  "warnings": [],
+  "absent_warnings": [],
+  "mappings": [],
+  "expected_counts": {},
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

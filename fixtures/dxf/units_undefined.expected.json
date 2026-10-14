@@ -1,0 +1,29 @@
+{
+  "description": "INSUNITS=0(단위 미설정) 경고",
+  "expect_error": null,
+  "insunits": 0,
+  "encoding": null,
+  "top_level_inserts": {
+    "LT-DL": 2
+  },
+  "nested_inserts": {},
+  "warnings": [
+    "UNITS_UNDEFINED"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "LT-DL",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {
+    "LIGHT": 2
+  },
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

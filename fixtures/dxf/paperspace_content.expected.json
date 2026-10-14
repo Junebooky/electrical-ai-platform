@@ -1,0 +1,29 @@
+{
+  "description": "Paper Space 객체는 표시·집계 제외(정보 경고)",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "SW-1": 1
+  },
+  "nested_inserts": {},
+  "warnings": [
+    "PAPER_SPACE_IGNORED"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "SW-1",
+      "item_code": "SWITCH"
+    }
+  ],
+  "expected_counts": {
+    "SWITCH": 1
+  },
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}
