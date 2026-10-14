@@ -146,8 +146,13 @@ export function TakeoffTable({
         {activeTab === "summary" ? (
           <div className="p-4 space-y-2">
             {takeoff.summary.length === 0 ? (
-              <div className="text-center py-12 text-slate-500 text-sm">
-                집계된 품목이 없습니다. 블록 매핑을 확인하세요.
+              <div className="text-center py-12 px-4 text-slate-400 text-xs">
+                <p className="text-slate-300 font-semibold mb-1">
+                  집계된 적산 품목이 없습니다.
+                </p>
+                <p className="text-slate-500 max-w-[280px] mx-auto leading-relaxed">
+                  블록 매핑을 설정하거나, 블록(INSERT)이 없는 도면의 경우 상단 <b>[누락 기구 수동 추가]</b> 버튼을 통해 기구를 등록하세요.
+                </p>
               </div>
             ) : (
               <table className="w-full text-left text-xs border-collapse">

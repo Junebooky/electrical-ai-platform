@@ -64,6 +64,68 @@ def test_parse_direct_and_errors(client: TestClient) -> None:
     assert len(data["objects"]) == 18
 
 
+def test_r12_malformed_lwpolyline_upload_returns_actionable_error(client: TestClient) -> None:
+    """Issue #15: API upload of R12 file with LWPOLYLINE missing AcDbPolyline returns 400 with actionable diagnosis."""
+    proj_res = client.post("/api/projects", json={"name": "R12 비표준 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    fixture_path = Path("packages/cad_engine/tests/fixtures/r12_malformed_lwpolyline.dxf")
+    res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("r12_malformed_lwpolyline.dxf", fixture_path.read_bytes(), "application/octet-stream")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["code"] == "DXF_STRUCTURE_ERROR"
+    # Actionable guidance must be present in both message and detail
+    assert "AutoCAD R12(AC1009)" in data["message"]
+    assert "LWPOLYLINE" in data["message"]
+    assert "AcDbPolyline" in data["message"]
+    assert data["detail"] is not None
+    assert "AutoCAD R12(AC1009)" in data["detail"]
+    assert "LWPOLYLINE" in data["detail"]
+    assert "AcDbPolyline" in data["detail"]
+    assert "AutoCAD 2000 DXF(AC1015)" in data["detail"]
+    assert "다시 저장(Save As)" in data["detail"]
+
+
+def test_non_r12_malformed_lwpolyline_does_not_trigger_r12_diagnosis(client: TestClient) -> None:
+    """Negative regression test: non-R12 file with malformed LWPOLYLINE gets general diagnosis without false R12 claim."""
+    proj_res = client.post("/api/projects", json={"name": "비R12 구조 오류 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    # Declared as AC1015 (AutoCAD 2000), not R12 (AC1009), but has bare LWPOLYLINE without subclass
+    non_r12_dxf = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n0\nEOF\n"
+    res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("non_r12_malformed.dxf", non_r12_dxf, "application/octet-stream")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["code"] == "DXF_STRUCTURE_ERROR"
+    # Must NOT produce false R12 diagnosis
+    assert "AutoCAD R12(AC1009)" not in data["message"]
+    assert "AutoCAD R12(AC1009)" not in (data.get("detail") or "")
+    # But general actionable guidance is still present
+    assert "LWPOLYLINE" in data["detail"]
+    assert "AcDbPolyline" in data["detail"]
+
+
+def test_not_a_dxf_does_not_trigger_r12_diagnosis(client: TestClient) -> None:
+    """Negative regression test: non-DXF payload does not trigger R12 diagnosis."""
+    proj_res = client.post("/api/projects", json={"name": "비DXF 오류 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("fake.dxf", b"NOT A DXF CONTENT AT ALL", "application/octet-stream")},
+    )
+    assert res.status_code == 400
+    data = res.json()
+    assert data["code"] == "NOT_A_DXF"
+    assert "AutoCAD R12(AC1009)" not in data["message"]
+
+
 def test_full_takeoff_lifecycle(client: TestClient) -> None:
     # 1. Create project
     proj_res = client.post("/api/projects", json={"name": "테스트 전기공사 프로젝트"})
