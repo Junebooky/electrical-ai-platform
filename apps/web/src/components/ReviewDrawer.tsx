@@ -8,6 +8,8 @@ interface ReviewDrawerProps {
   object: SourceObject | null;
   evidence: TakeoffEvidenceRow | null;
   mappings: ItemMappingRule[];
+  sourceType?: string;
+  coordinateSpace?: string;
   onUpdateReview: (
     objectId: string,
     inclusionStatus: "INCLUDED" | "EXCLUDED" | "MANUAL_ADDED",
@@ -40,7 +42,12 @@ function ReviewDrawerContent({
   onClose,
   isSaving,
   objectId,
+  sourceType,
+  coordinateSpace,
 }: ContentProps) {
+  const isImageCoordinate = sourceType === "IMAGE" || coordinateSpace === "IMAGE_PIXEL";
+  const coordLabel = isImageCoordinate ? "이미지 좌표 (px)" : "CAD 좌표 (WCS)";
+
   const isManual =
     evidence?.inclusion_status === "MANUAL_ADDED" ||
     evidence?.entity_type === "MANUAL_POINT" ||
@@ -111,9 +118,9 @@ function ReviewDrawerContent({
           <span className="font-mono text-slate-200">{layerName}</span>
         </div>
         <div className="flex items-center justify-between text-slate-400">
-          <span>좌표 (WCS)</span>
+          <span>{coordLabel}</span>
           <span className="font-mono text-slate-200 flex items-center gap-1">
-            <MapPin size={12} className="text-amber-400" />({coordX}, {coordY})
+            <MapPin size={12} className="text-amber-400" />({coordX}, {coordY}){isImageCoordinate ? " px" : ""}
           </span>
         </div>
         <div className="flex items-center justify-between text-slate-400">

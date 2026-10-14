@@ -206,6 +206,12 @@ async function run() {
       await new Promise((r) => setTimeout(r, 800));
     }
 
+    const drawerCoordText = await page.evaluate(() => document.body.innerText);
+    if (!drawerCoordText.includes("이미지 좌표 (px)")) {
+      throw new Error("ReviewDrawer did not show '이미지 좌표 (px)' label for image drawing!");
+    }
+    console.log("  ✓ Review Drawer correctly displayed '이미지 좌표 (px)'");
+
     // Screenshot 3: Review Drawer Opened for Manual Marker
     const shot3 = path.join(SCREENSHOTS_DIR, "14_image_review_drawer_opened.png");
     await page.screenshot({ path: shot3, fullPage: false });

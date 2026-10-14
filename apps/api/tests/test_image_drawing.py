@@ -550,3 +550,212 @@ def test_image_drawing_img03_unit_security_enforcement(client: TestClient) -> No
     xlsx_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/export/xlsx")
     assert xlsx_res.status_code == 200
     assert len(xlsx_res.content) > 1000
+
+
+def test_manual_post_drawing_id_mismatch_rejected(client: TestClient) -> None:
+    """Test traceability guard: POST /manual-objects with body drawing_id mismatching URL path is rejected with 400."""
+    proj_res = client.post("/api/projects", json={"name": "drawing_id 일치 검증"})
+    proj_id = proj_res.json()["id"]
+
+    raw_bytes = FIXTURE_IMAGE_PATH.read_bytes()
+    upload_res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", raw_bytes, "image/png")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    mismatch_res = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={
+            "id": "m_mismatch",
+            "drawing_id": "different_dwg_id",
+            "x": 100.0,
+            "y": 100.0,
+            "item_code": "LIGHT",
+            "unit": "EA",
+        },
+    )
+    assert mismatch_res.status_code == 400
+    assert "drawing_id" in mismatch_res.json()["detail"]
+
+
+def test_legacy_or_tampered_off_image_manual_markers_fail_closed(client: TestClient) -> None:
+    """Test A04/A01 HIGH defense: legacy/tampered off-image manual markers in storage fail-closed at GET takeoff."""
+    import csv
+    import io
+
+    import openpyxl
+    from eai_api import app as app_module
+    from eai_api.models import EvidenceReviewItem, InclusionStatus, ManualObjectItem, ReviewStatus
+
+    proj_res = client.post("/api/projects", json={"name": "레거시 오프이미지 마커 방어 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    raw_bytes = FIXTURE_IMAGE_PATH.read_bytes()
+    upload_res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", raw_bytes, "image/png")},
+    )
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Direct storage injection of legacy or manually tampered markers:
+    # 1 valid marker at boundary (999.0, 799.0)
+    # 5 off-image / non-finite markers: (1000.0, 0.0), (0.0, 800.0), (-1.0, 1.0), (NaN, 100.0), (100.0, Inf)
+    app_module.storage.save_manual_objects(
+        proj_id,
+        drawing_id,
+        [
+            ManualObjectItem.model_construct(id="m_valid", drawing_id=drawing_id, x=999.0, y=799.0, item_code="LIGHT", item_name="전등", unit="EA"),
+            ManualObjectItem.model_construct(id="m_off_x", drawing_id=drawing_id, x=1000.0, y=0.0, item_code="LIGHT", item_name="전등", unit="EA"),
+            ManualObjectItem.model_construct(id="m_off_y", drawing_id=drawing_id, x=0.0, y=800.0, item_code="LIGHT", item_name="전등", unit="EA"),
+            ManualObjectItem.model_construct(id="m_neg", drawing_id=drawing_id, x=-1.0, y=1.0, item_code="LIGHT", item_name="전등", unit="EA"),
+            ManualObjectItem.model_construct(id="m_nan", drawing_id=drawing_id, x=float("nan"), y=100.0, item_code="LIGHT", item_name="전등", unit="EA"),
+            ManualObjectItem.model_construct(id="m_inf", drawing_id=drawing_id, x=100.0, y=float("inf"), item_code="LIGHT", item_name="전등", unit="EA"),
+        ],
+    )
+
+    # Tampered review override trying to force inclusion on m_off_x
+    app_module.storage.save_reviews(
+        proj_id,
+        drawing_id,
+        {
+            "m_off_x": EvidenceReviewItem(
+                source_object_id="m_off_x",
+                inclusion_status=InclusionStatus.INCLUDED,
+                review_status=ReviewStatus.REVIEWED,
+                reason="변조된 강제 포함 시도",
+            )
+        },
+    )
+
+    # 1. Verify GET /takeoff response
+    t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
+    assert t_res.status_code == 200
+    t_data = t_res.json()
+
+    # Summary: LIGHT quantity must be strictly 1 (preserving only m_valid, excluding all 5 off-image markers)
+    sum_by_code = {s["item_code"]: s for s in t_data["summary"]}
+    assert "LIGHT" in sum_by_code
+    assert sum_by_code["LIGHT"]["quantity"] == 1
+    assert sum_by_code["LIGHT"]["unit"] == "EA"
+    assert sum_by_code["LIGHT"]["review_status"] == "UNRESOLVED"
+    assert "미해결 객체" in sum_by_code["LIGHT"]["notes"]
+
+    # Provisional and unresolved counts
+    assert t_data["is_provisional"] is True
+    assert t_data["unresolved_count"] >= 5
+
+    # Evidence: check each marker
+    ev_by_id = {e["source_object_id"]: e for e in t_data["evidence"]}
+    assert ev_by_id["m_valid"]["inclusion_status"] == "MANUAL_ADDED"
+    assert ev_by_id["m_valid"]["review_status"] == "REVIEWED"
+    assert ev_by_id["m_valid"]["x"] == 999.0
+    assert ev_by_id["m_valid"]["y"] == 799.0
+
+    for off_id in ("m_off_x", "m_off_y", "m_neg", "m_nan", "m_inf"):
+        assert off_id in ev_by_id
+        ev = ev_by_id[off_id]
+        assert ev["inclusion_status"] == "EXCLUDED", f"{off_id} must be EXCLUDED"
+        assert ev["review_status"] == "UNRESOLVED", f"{off_id} must be UNRESOLVED"
+        assert "이탈/비유한 좌표" in ev["review_reason"]
+        assert "IMG-02" in ev["review_reason"]
+
+    # 2. Verify CSV Summary with csv.reader
+    csv_sum_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/export/csv?type=summary")
+    assert csv_sum_res.status_code == 200
+    sum_reader = list(csv.reader(io.StringIO(csv_sum_res.content.decode("utf-8-sig"))))
+    sum_header = sum_reader[0]
+    qty_col = sum_header.index("quantity")
+    status_col = sum_header.index("review_status")
+    code_col = sum_header.index("item_code")
+
+    light_row = next(r for r in sum_reader[1:] if r[code_col] == "LIGHT")
+    assert light_row[qty_col] == "1"
+    assert light_row[status_col] == "UNRESOLVED"
+
+    # 3. Verify CSV Evidence with csv.reader
+    csv_ev_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/export/csv?type=evidence")
+    assert csv_ev_res.status_code == 200
+    ev_reader = list(csv.reader(io.StringIO(csv_ev_res.content.decode("utf-8-sig"))))
+    ev_header = ev_reader[0]
+    id_col = ev_header.index("source_object_id")
+    inc_col = ev_header.index("inclusion_status")
+    rev_col = ev_header.index("review_status")
+
+    ev_rows_by_id = {r[id_col]: r for r in ev_reader[1:]}
+    assert ev_rows_by_id["m_valid"][inc_col] == "MANUAL_ADDED"
+    assert ev_rows_by_id["m_valid"][rev_col] == "REVIEWED"
+    for off_id in ("m_off_x", "m_off_y", "m_neg", "m_nan", "m_inf"):
+        assert ev_rows_by_id[off_id][inc_col] == "EXCLUDED"
+        assert ev_rows_by_id[off_id][rev_col] == "UNRESOLVED"
+
+    # 4. Verify XLSX with openpyxl cell-by-cell
+    xlsx_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/export/xlsx")
+    assert xlsx_res.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_res.content))
+    assert "Takeoff Summary" in wb.sheetnames
+    assert "Takeoff Evidence" in wb.sheetnames
+
+    # Check Summary sheet: row for LIGHT has quantity == 1
+    ws_sum = wb["Takeoff Summary"]
+    found_light_sum = False
+    for row in ws_sum.iter_rows(min_row=2, values_only=True):
+        if row[0] == "LIGHT":
+            found_light_sum = True
+            assert row[4] == 1  # quantity
+            assert row[6] == "UNRESOLVED"  # review_status
+    assert found_light_sum is True
+
+    # Check Evidence sheet: verify cells for invalid markers have EXCLUDED and UNRESOLVED
+    ws_ev = wb["Takeoff Evidence"]
+    ev_xlsx_by_id = {}
+    for row in ws_ev.iter_rows(min_row=2, values_only=True):
+        ev_xlsx_by_id[row[0]] = {"inclusion": row[9], "review": row[10]}
+
+    assert ev_xlsx_by_id["m_valid"]["inclusion"] == "MANUAL_ADDED"
+    assert ev_xlsx_by_id["m_valid"]["review"] == "REVIEWED"
+    for off_id in ("m_off_x", "m_off_y", "m_neg", "m_nan", "m_inf"):
+        assert ev_xlsx_by_id[off_id]["inclusion"] == "EXCLUDED"
+        assert ev_xlsx_by_id[off_id]["review"] == "UNRESOLVED"
+
+    # 5. Immutability verification: raw image file on disk remains 100% identical
+    raw_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/raw")
+    assert raw_res.status_code == 200
+    assert raw_res.content == raw_bytes
+
+
+def test_dxf_wcs_negative_coordinates_preserved_and_counted(client: TestClient) -> None:
+    """Test DXF CAD drawings preserve and correctly count negative WCS manual coordinates."""
+    proj_res = client.post("/api/projects", json={"name": "DXF 음수 WCS 좌표 테스트"})
+    proj_id = proj_res.json()["id"]
+
+    dxf_path = Path("fixtures/dxf/basic_devices.dxf")
+    upload_res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("basic_devices.dxf", dxf_path.read_bytes(), "application/octet-stream")},
+    )
+    assert upload_res.status_code == 200
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Add manual marker with negative WCS coordinates on CAD drawing
+    neg_cad = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_cad_neg", "drawing_id": drawing_id, "x": -150.0, "y": -300.0, "item_code": "LIGHT_EXT", "unit": "EA"},
+    )
+    assert neg_cad.status_code == 200
+
+    t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
+    assert t_res.status_code == 200
+    t_data = t_res.json()
+
+    # Negative coordinate on DXF must be included and counted
+    sum_by_code = {s["item_code"]: s for s in t_data["summary"]}
+    assert "LIGHT_EXT" in sum_by_code
+    assert sum_by_code["LIGHT_EXT"]["quantity"] == 1
+    assert sum_by_code["LIGHT_EXT"]["review_status"] == "REVIEWED"
+
+    ev = next(e for e in t_data["evidence"] if e["source_object_id"] == "m_cad_neg")
+    assert ev["inclusion_status"] == "MANUAL_ADDED"
+    assert ev["x"] == -150.0
+    assert ev["y"] == -300.0
+

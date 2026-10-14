@@ -365,6 +365,13 @@ def add_manual_object(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
+    # Traceability boundary: Ensure drawing_id in payload matches URL path parameter
+    if item.drawing_id and item.drawing_id != drawing_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"요청 본문의 drawing_id('{item.drawing_id}')가 URL 경로의 drawing_id('{drawing_id}')와 일치하지 않습니다.",
+        )
+
     # High-2 Defense: Strict coordinate bounds for IMAGE drawings [0, width) and [0, height)
     is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
     if is_image:

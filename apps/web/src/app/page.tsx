@@ -523,6 +523,8 @@ export default function WorkspacePage() {
                 object={selectedObject}
                 evidence={selectedEvidence}
                 mappings={mappings}
+                sourceType={currentDrawing.source_type}
+                coordinateSpace={currentDrawing.coordinate_space}
                 onUpdateReview={handleUpdateReview}
                 onDeleteManualObject={handleDeleteManualObject}
                 onClose={() => setSelectedObjectId(null)}

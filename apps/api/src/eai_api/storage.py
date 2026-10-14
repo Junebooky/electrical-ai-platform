@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
 from datetime import UTC, datetime
@@ -237,7 +238,15 @@ class Storage:
         if not f.exists():
             return []
         data = json.loads(f.read_text(encoding="utf-8"))
-        return [ManualObjectItem(**item) for item in data]
+        objects: list[ManualObjectItem] = []
+        for item in data:
+            try:
+                objects.append(ManualObjectItem(**item))
+            except Exception:
+                # Allow legacy/tampered non-finite or out-of-spec items to load
+                # so calculate_takeoff can rigorously fail-close them
+                objects.append(ManualObjectItem.model_construct(**item))
+        return objects
 
     def save_manual_objects(
         self, project_id: str, drawing_id: str, objects: list[ManualObjectItem]
@@ -561,14 +570,24 @@ def build_takeoff_result(
         is_conflicted = False
         conflict_reason = ""
 
-        # IMG-03 / M-UNIT-01: On IMAGE drawings, all manual objects and mapped targets MUST be EA-only
-        is_image_dwg = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
-        if is_image_dwg and mo_u != "EA":
-            is_conflicted = True
-            conflict_reason = f"이미지 도면 수동 기구 단위('{mo.unit}') 비EA 불허 (IMG-03/M-UNIT-01: EA 전용)"
-        elif is_image_dwg and effective_code in item_meta and (item_meta[effective_code].unit or "").strip() != "EA":
-            is_conflicted = True
-            conflict_reason = f"이미지 도면 품목('{effective_code}') 매핑 단위('{item_meta[effective_code].unit}') 비EA 불허 (IMG-03)"
+        # IMG-02 & IMG-03: Strict coordinate boundary [0, W) x [0, H) and EA-only unit safety for IMAGE drawings
+        if is_image_dwg:
+            dims = getattr(drawing, "dimensions", None) or {}
+            img_w = float(dims.get("width") or (drawing.extents.max[0] if drawing.extents else 0.0))
+            img_h = float(dims.get("height") or (drawing.extents.max[1] if drawing.extents else 0.0))
+            is_coord_finite = math.isfinite(mo.x) and math.isfinite(mo.y)
+            if not is_coord_finite or mo.x < 0.0 or mo.x >= img_w or mo.y < 0.0 or mo.y >= img_h:
+                is_conflicted = True
+                conflict_reason = (
+                    f"이미지 도면 픽셀 유효 범위([0, {int(img_w)}) × [0, {int(img_h)})) 이탈/비유한 좌표"
+                    f"(x={mo.x}, y={mo.y}) - 수량 산출 보류 (IMG-02)"
+                )
+            elif mo_u != "EA":
+                is_conflicted = True
+                conflict_reason = f"이미지 도면 수동 기구 단위('{mo.unit}') 비EA 불허 (IMG-03/M-UNIT-01: EA 전용)"
+            elif effective_code in item_meta and (item_meta[effective_code].unit or "").strip() != "EA":
+                is_conflicted = True
+                conflict_reason = f"이미지 도면 품목('{effective_code}') 매핑 단위('{item_meta[effective_code].unit}') 비EA 불허 (IMG-03)"
         elif base_item_code in conflicted_codes:
             is_conflicted = True
             conflict_reason = f"수동 추가 기구 단위('{mo.unit}') 상충/결함 (P0 비EA 또는 단위 불일치)"

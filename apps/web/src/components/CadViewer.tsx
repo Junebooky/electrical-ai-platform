@@ -142,8 +142,8 @@ export function CadViewer({
     const wx = (mouseX - pan.x) / scale;
     const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
     setMouseWorld({
-      x: isImage ? Math.round(wx) : Math.round(wx * 100) / 100,
-      y: isImage ? Math.round(wy) : Math.round(wy * 100) / 100,
+      x: isImage ? Math.floor(wx) : Math.round(wx * 100) / 100,
+      y: isImage ? Math.floor(wy) : Math.round(wy * 100) / 100,
     });
 
     if (isDragging) {
@@ -173,18 +173,24 @@ export function CadViewer({
           const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
 
           if (isImage) {
-            if (wx < 0 || wx >= imgWidth || wy < 0 || wy >= imgHeight) {
+            // Integer pixel index contract: [0, imgWidth) x [0, imgHeight) via Math.floor
+            const targetX = Math.floor(wx);
+            const targetY = Math.floor(wy);
+
+            if (targetX < 0 || targetX >= imgWidth || targetY < 0 || targetY >= imgHeight) {
               onOutOfBoundsClick?.(wx, wy, imgWidth, imgHeight);
               setIsDragging(false);
               dragStartPos.current = null;
               return;
             }
-          }
 
-          onAddManualPoint(
-            isImage ? Math.round(wx) : Math.round(wx * 100) / 100,
-            isImage ? Math.round(wy) : Math.round(wy * 100) / 100
-          );
+            onAddManualPoint(targetX, targetY);
+          } else {
+            onAddManualPoint(
+              Math.round(wx * 100) / 100,
+              Math.round(wy * 100) / 100
+            );
+          }
         }
       }
     }
