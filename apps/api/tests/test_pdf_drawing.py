@@ -425,3 +425,63 @@ def test_pdf_raw_preservation_and_download(client: TestClient, pdf_two_pages: by
     assert raw_res.headers["content-type"] == "application/pdf"
     assert raw_res.content == pdf_two_pages
     assert hashlib.sha256(raw_res.content).hexdigest() == hashlib.sha256(pdf_two_pages).hexdigest()
+
+
+def test_pdf_a04_matrix_scenario_with_expected_json(client: TestClient, pdf_two_pages: bytes) -> None:
+    """Validate against QA_PDF_B_MATRIX expected_takeoff.json ground truth oracle."""
+    import json
+
+    expected_path = FIXTURES_DIR / "expected_takeoff.json"
+    assert expected_path.exists()
+    gt = json.loads(expected_path.read_text(encoding="utf-8"))
+
+    proj = client.post("/api/projects", json={"name": "A04 매트릭스 검증"}).json()
+    proj_id = proj["id"]
+
+    upload_res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": (gt["document"], pdf_two_pages, "application/pdf")},
+    )
+    assert upload_res.status_code == 200
+    drawing_id = upload_res.json()["drawing_id"]
+
+    # Initial state: 0 items
+    t0 = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff").json()
+    assert len(t0["summary"]) == 0
+
+    # Add markers from ground truth
+    total_markers = 0
+    for page in gt["pages"]:
+        p_idx = page["page_index"]
+        for marker in page["manual_markers"]:
+            add_res = client.post(
+                f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+                json={
+                    "id": marker["id"],
+                    "drawing_id": drawing_id,
+                    "page_index": p_idx,
+                    "x": marker["x"],
+                    "y": marker["y"],
+                    "item_code": marker["item_code"],
+                    "unit": marker["unit"],
+                },
+            )
+            assert add_res.status_code == 200
+            total_markers += 1
+
+    # Check takeoff against oracle
+    t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
+    assert t_res.status_code == 200
+    takeoff = t_res.json()
+
+    exp_sum = gt["expected_summary"]
+    total_calc = sum(s["quantity"] for s in takeoff["summary"])
+    assert total_calc == exp_sum["total_quantity"]
+
+    sum_map = {s["item_code"]: s for s in takeoff["summary"]}
+    for code, expected_info in exp_sum["items"].items():
+        assert code in sum_map
+        assert sum_map[code]["quantity"] == expected_info["quantity"]
+        assert sum_map[code]["unit"] == expected_info["unit"]
+        assert sum_map[code]["is_provisional"] is exp_sum["is_provisional"]
+
