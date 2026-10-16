@@ -13,6 +13,8 @@ import {
   PdfPageFeatures,
   PdfTextFeature,
   PdfPathFeature,
+  SymbolCandidate,
+  CandidateBulkReviewRequest,
 } from "@/types/cad";
 import { CadViewer } from "@/components/CadViewer";
 import { MappingPanel } from "@/components/MappingPanel";
@@ -20,6 +22,7 @@ import { TakeoffTable } from "@/components/TakeoffTable";
 import { ReviewDrawer } from "@/components/ReviewDrawer";
 import { WarningBanner } from "@/components/WarningBanner";
 import { ManualAddModal } from "@/components/ManualAddModal";
+import { CandidateReviewTable } from "@/components/CandidateReviewTable";
 import {
   Upload,
   Layers,
@@ -31,6 +34,9 @@ import {
   TableProperties,
   Tags,
   FileText,
+  Sparkles,
+  Check,
+  X,
 } from "lucide-react";
 
 export default function WorkspacePage() {
@@ -42,12 +48,18 @@ export default function WorkspacePage() {
   const [takeoff, setTakeoff] = useState<TakeoffResult | null>(null);
 
   // UI state
-  const [activeRightTab, setActiveRightTab] = useState<"takeoff" | "mapping" | "layers">("takeoff");
+  const [activeRightTab, setActiveRightTab] = useState<"takeoff" | "candidates" | "mapping" | "layers">("takeoff");
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [highlightedItemCode, setHighlightedItemCode] = useState<string | null>(null);
   const [hiddenLayers, setHiddenLayers] = useState<Set<string>>(new Set());
   const [isAddManualMode, setIsAddManualMode] = useState(false);
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
+
+  // Issue #23: Symbol Candidates & Review
+  const [candidates, setCandidates] = useState<SymbolCandidate[]>([]);
+  const [selectedCandidate, setSelectedCandidate] = useState<SymbolCandidate | null>(null);
+  const [isDetecting, setIsDetecting] = useState<boolean>(false);
+  const [showCandidates, setShowCandidates] = useState<boolean>(true);
 
   interface PendingManualMarker {
     drawingId: string;
@@ -105,15 +117,22 @@ export default function WorkspacePage() {
       const seq = ++requestSeqRef.current;
       activeDrawingIdRef.current = drawingId;
       try {
-        const [drawingData, mappingRules] = await Promise.all([
+        const [drawingData, mappingRules, candData] = await Promise.all([
           api.getDrawing(projectId, drawingId),
           api.getMappings(projectId, drawingId),
+          api.getCandidates(projectId, drawingId).catch(() => ({
+            drawing_id: drawingId,
+            summary: { total: 0, proposed: 0, accepted: 0, rejected: 0 },
+            candidates: [],
+          })),
         ]);
         if (requestSeqRef.current !== seq || activeDrawingIdRef.current !== drawingId) {
           return; // Newer request already initiated, discard stale response
         }
         setCurrentDrawing(drawingData);
         setMappings(mappingRules);
+        setCandidates(candData.candidates || []);
+        setSelectedCandidate(null);
         setCurrentPageIndex(0);
         setSelectedFeature(null);
         setPageFeatures(null);
@@ -281,6 +300,7 @@ export default function WorkspacePage() {
     setCurrentPageIndex(newIndex);
     setSelectedObjectId(null);
     setSelectedFeature(null);
+    setSelectedCandidate(null);
     setPageFeatures(null);
   };
 
@@ -362,6 +382,40 @@ export default function WorkspacePage() {
       await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
     } catch (err: unknown) {
       setErrorMessage("수동 기구 삭제 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Issue #23: Run candidate detection
+  const handleRunDetection = async () => {
+    if (!currentProject || !currentDrawing) return;
+    setIsDetecting(true);
+    try {
+      const res = await api.detectCandidates(currentProject.id, currentDrawing.drawing_id);
+      setCandidates(res.candidates);
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+    } catch (err: unknown) {
+      setErrorMessage("기호 탐지 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
+  // Issue #23: Review candidates (single or bulk)
+  const handleCandidateReview = async (req: CandidateBulkReviewRequest) => {
+    if (!currentProject || !currentDrawing) return;
+    setIsSaving(true);
+    try {
+      const res = await api.reviewCandidates(currentProject.id, currentDrawing.drawing_id, req);
+      setCandidates(res.candidates);
+      if (selectedCandidate) {
+        const updated = res.candidates.find((c) => c.candidate_id === selectedCandidate.candidate_id);
+        setSelectedCandidate(updated || null);
+      }
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+    } catch (err: unknown) {
+      setErrorMessage("기호 검수 반영 실패: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsSaving(false);
     }
@@ -509,17 +563,42 @@ export default function WorkspacePage() {
         {/* Actions */}
         <div className="flex items-center gap-2">
           {currentDrawing && (
-            <button
-              onClick={() => setIsAddManualMode(!isAddManualMode)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition border ${
-                isAddManualMode
-                  ? "bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-500/20"
-                  : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
-              }`}
-            >
-              <Plus size={14} />
-              누락 기구 수동 추가
-            </button>
+            <>
+              <button
+                onClick={handleRunDetection}
+                disabled={isDetecting || isLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-sky-600/20 transition"
+                title="도면에서 AI 전기기구 후보 자동 탐지"
+              >
+                <Sparkles size={14} className={isDetecting ? "animate-spin" : ""} />
+                {isDetecting ? "기호 탐지 중..." : "AI 기호 탐지"}
+              </button>
+              {candidates.length > 0 && (
+                <button
+                  onClick={() => setShowCandidates((prev) => !prev)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition border ${
+                    showCandidates
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                      : "bg-slate-800 text-slate-400 border-slate-700"
+                  }`}
+                  title="기호 후보 오버레이 표시 토글"
+                >
+                  <Eye size={13} />
+                  <span>기호 {showCandidates ? "표시 중" : "숨김"}</span>
+                </button>
+              )}
+              <button
+                onClick={() => setIsAddManualMode(!isAddManualMode)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition border ${
+                  isAddManualMode
+                    ? "bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-500/20"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+              >
+                <Plus size={14} />
+                누락 기구 수동 추가
+              </button>
+            </>
           )}
 
           <input
@@ -695,9 +774,126 @@ export default function WorkspacePage() {
                 selectedFeatureId={selectedFeature?.source_object_id || null}
                 onSelectFeature={(feat) => {
                   setSelectedFeature(feat);
-                  if (feat) setSelectedObjectId(null);
+                  if (feat) {
+                    setSelectedObjectId(null);
+                    setSelectedCandidate(null);
+                  }
+                }}
+                candidates={candidates}
+                showCandidates={showCandidates}
+                selectedCandidateId={selectedCandidate?.candidate_id || null}
+                onSelectCandidate={(cand) => {
+                  setSelectedCandidate(cand);
+                  if (cand) {
+                    setSelectedObjectId(null);
+                    setSelectedFeature(null);
+                    setActiveRightTab("candidates");
+                  }
                 }}
               />
+
+              {/* Selected AI Candidate Card (Issue #23) */}
+              {selectedCandidate && (
+                <div
+                  data-testid="selected-candidate-card"
+                  className="absolute bottom-6 right-6 z-30 w-96 bg-slate-900/95 backdrop-blur-md border border-amber-500/50 rounded-xl shadow-2xl p-4 text-slate-200"
+                >
+                  <div className="flex items-start justify-between border-b border-slate-800 pb-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded text-xs font-semibold">
+                        AI 탐지 기호 후보
+                      </span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        P.{selectedCandidate.page_index + 1}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedCandidate(null)}
+                      className="text-slate-400 hover:text-white text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center justify-between p-2.5 bg-slate-950/80 rounded border border-slate-800">
+                      <div>
+                        <span className="block text-slate-400 text-[10px] uppercase">추천 품목</span>
+                        <span className="font-semibold text-amber-300 text-sm">
+                          {selectedCandidate.suggested_item_name} ({selectedCandidate.reviewed_item_code || selectedCandidate.suggested_item_code})
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="block text-slate-400 text-[10px] uppercase">신뢰도</span>
+                        <span className="font-mono text-sky-300 font-bold">
+                          {Math.round(selectedCandidate.confidence * 100)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-slate-400 font-mono">
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">후보 ID</span>
+                        <span className="text-slate-300 truncate block text-[11px]">{selectedCandidate.candidate_id}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">현재 상태</span>
+                        <span className={`font-semibold ${
+                          selectedCandidate.status === "ACCEPTED" ? "text-emerald-400" : selectedCandidate.status === "REJECTED" ? "text-rose-400" : "text-amber-400"
+                        }`}>
+                          {selectedCandidate.status === "ACCEPTED" ? "✓ 승인 (1 EA 반영)" : selectedCandidate.status === "REJECTED" ? "✕ 제외됨 (0 EA)" : "대기 중 (0 EA)"}
+                        </span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">좌표계 / 위치</span>
+                        <span className="text-slate-300">
+                          {selectedCandidate.coordinate_space} ({selectedCandidate.x}, {selectedCandidate.y})
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-2">
+                      <button
+                        onClick={() =>
+                          handleCandidateReview({
+                            updates: [
+                              {
+                                candidate_id: selectedCandidate.candidate_id,
+                                status: "ACCEPTED",
+                                reviewed_item_code: selectedCandidate.reviewed_item_code || selectedCandidate.suggested_item_code,
+                                review_note: "검수 승인",
+                              },
+                            ],
+                          })
+                        }
+                        disabled={isSaving}
+                        className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium text-xs flex items-center justify-center gap-1.5 transition shadow"
+                      >
+                        <Check size={14} />
+                        <span>승인 (1 EA 반영)</span>
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleCandidateReview({
+                            updates: [
+                              {
+                                candidate_id: selectedCandidate.candidate_id,
+                                status: "REJECTED",
+                                review_note: "검수 제외",
+                              },
+                            ],
+                          })
+                        }
+                        disabled={isSaving}
+                        className="flex-1 py-2 px-3 bg-rose-600/80 hover:bg-rose-500 text-white rounded font-medium text-xs flex items-center justify-center gap-1.5 transition shadow"
+                      >
+                        <X size={14} />
+                        <span>거부 (제외)</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Selected Vector Feature Inspection Card (PR C) */}
               {selectedFeature &&
@@ -793,10 +989,10 @@ export default function WorkspacePage() {
             {/* Right Panel: Split with Tabs (Takeoff, Mapping, Layers) */}
             <div className="w-[480px] h-full flex flex-col border-l border-slate-800 bg-slate-900 shrink-0">
               {/* Top Tab Bar */}
-              <div className="flex items-center border-b border-slate-800 bg-slate-950/80 px-2 text-xs">
+              <div className="flex items-center border-b border-slate-800 bg-slate-950/80 px-1 text-xs">
                 <button
                   onClick={() => setActiveRightTab("takeoff")}
-                  className={`flex items-center gap-1.5 py-3 px-3.5 border-b-2 font-medium transition ${
+                  className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
                     activeRightTab === "takeoff"
                       ? "border-emerald-500 text-emerald-400"
                       : "border-transparent text-slate-400 hover:text-slate-200"
@@ -806,10 +1002,21 @@ export default function WorkspacePage() {
                   물량산출표
                 </button>
                 <button
-                  onClick={() => setActiveRightTab("mapping")}
-                  className={`flex items-center gap-1.5 py-3 px-3.5 border-b-2 font-medium transition ${
-                    activeRightTab === "mapping"
+                  onClick={() => setActiveRightTab("candidates")}
+                  className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
+                    activeRightTab === "candidates"
                       ? "border-sky-500 text-sky-400"
+                      : "border-transparent text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <Sparkles size={14} />
+                  기호 검수 ({candidates.length})
+                </button>
+                <button
+                  onClick={() => setActiveRightTab("mapping")}
+                  className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
+                    activeRightTab === "mapping"
+                      ? "border-indigo-500 text-indigo-400"
                       : "border-transparent text-slate-400 hover:text-slate-200"
                   }`}
                 >
@@ -818,7 +1025,7 @@ export default function WorkspacePage() {
                 </button>
                 <button
                   onClick={() => setActiveRightTab("layers")}
-                  className={`flex items-center gap-1.5 py-3 px-3.5 border-b-2 font-medium transition ${
+                  className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
                     activeRightTab === "layers"
                       ? "border-amber-500 text-amber-400"
                       : "border-transparent text-slate-400 hover:text-slate-200"
@@ -831,6 +1038,18 @@ export default function WorkspacePage() {
 
               {/* Panel Content */}
               <div className="flex-1 overflow-hidden">
+                {activeRightTab === "candidates" && (
+                  <CandidateReviewTable
+                    candidates={candidates}
+                    availableItems={availableItems}
+                    isDetecting={isDetecting}
+                    selectedCandidateId={selectedCandidate?.candidate_id || null}
+                    onDetect={handleRunDetection}
+                    onReview={handleCandidateReview}
+                    onSelectCandidate={(cand) => setSelectedCandidate(cand)}
+                    isSaving={isSaving}
+                  />
+                )}
                 {activeRightTab === "takeoff" && takeoff && (
                   <TakeoffTable
                     takeoff={takeoff}

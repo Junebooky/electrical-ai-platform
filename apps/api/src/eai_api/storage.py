@@ -14,6 +14,7 @@ from cad_engine.schema import NormalizedDrawing, WarningCode
 from cad_engine.takeoff import BlockMapping, Disposition, aggregate
 
 from .models import (
+    CandidateStatus,
     DrawingSummary,
     EvidenceReviewItem,
     InclusionStatus,
@@ -23,6 +24,7 @@ from .models import (
     ProjectMetadata,
     QuantityMethod,
     ReviewStatus,
+    SymbolCandidate,
     TakeoffEvidenceRow,
     TakeoffResult,
     TakeoffSummaryRow,
@@ -325,6 +327,23 @@ class Storage:
         f = self.projects_dir / project_id / "drawings" / drawing_id / "manual_objects.json"
         self._save_json(f, [item.model_dump(mode="json") for item in objects])
 
+    # ------------------------------------------------------------- Candidates (Issue #23)
+    def get_candidates(self, project_id: str, drawing_id: str) -> list[SymbolCandidate]:
+        f = self.projects_dir / project_id / "drawings" / drawing_id / "candidates.json"
+        if not f.exists():
+            return []
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            return [SymbolCandidate.model_validate(item) for item in data]
+        except Exception:
+            return []
+
+    def save_candidates(
+        self, project_id: str, drawing_id: str, candidates: list[SymbolCandidate]
+    ) -> None:
+        f = self.projects_dir / project_id / "drawings" / drawing_id / "candidates.json"
+        self._save_json(f, [item.model_dump(mode="json") for item in candidates])
+
     # ------------------------------------------------------------- Calculations
     def calculate_takeoff(self, project_id: str, drawing_id: str) -> TakeoffResult | None:
         drawing = self.get_drawing(project_id, drawing_id)
@@ -334,6 +353,7 @@ class Storage:
         mappings = self.get_mappings(project_id, drawing_id)
         reviews = self.get_reviews(project_id, drawing_id)
         manual_objects = self.get_manual_objects(project_id, drawing_id)
+        candidates = self.get_candidates(project_id, drawing_id)
 
         return build_takeoff_result(
             drawing=drawing,
@@ -341,6 +361,7 @@ class Storage:
             mapping_rules=mappings,
             reviews=reviews,
             manual_objects=manual_objects,
+            candidates=candidates,
         )
 
     def _save_json(self, path: Path, data: Any) -> None:
@@ -416,6 +437,7 @@ def build_takeoff_result(
     mapping_rules: list[ItemMappingRule],
     reviews: dict[str, EvidenceReviewItem],
     manual_objects: list[ManualObjectItem],
+    candidates: list[SymbolCandidate] | None = None,
 ) -> TakeoffResult:
     """Build PRD 7.1 and 7.2 summary and evidence rows with user overrides."""
     # Convert mapping rules to takeoff BlockMapping with full unit and specification (ADR-005)
@@ -752,7 +774,49 @@ def build_takeoff_result(
             )
         )
 
-    # 3. Calculate Summary Rows
+    # 3. Process Accepted Symbol Candidates (Issue #23)
+    if candidates:
+        for cand in candidates:
+            # Domain Invariant: PROPOSED and REJECTED candidates MUST NEVER contribute to takeoff
+            if cand.status != CandidateStatus.ACCEPTED:
+                continue
+
+            effective_code = cand.reviewed_item_code or cand.suggested_item_code
+            if not effective_code or effective_code in ("EXCLUDE", "UNMAPPED") or effective_code in conflicted_codes:
+                continue
+
+            # Ensure canonical item metadata has this code
+            if effective_code not in item_meta:
+                item_meta[effective_code] = ItemMappingRule(
+                    block_name=f"[CANDIDATE:{cand.detection_source}]",
+                    item_code=effective_code,
+                    item_name=cand.suggested_item_name or effective_code,
+                    unit="EA",
+                    specification="",
+                )
+
+            evidence_rows.append(
+                TakeoffEvidenceRow(
+                    source_object_id=cand.candidate_id,
+                    drawing_id=drawing.drawing_id,
+                    parent_source_id=None,
+                    block_name=f"[CANDIDATE:{cand.detection_source}]",
+                    layer_name="CANDIDATE",
+                    entity_type="SYMBOL_CANDIDATE",
+                    x=cand.x,
+                    y=cand.y,
+                    mapped_item_code=effective_code,
+                    inclusion_status=InclusionStatus.INCLUDED,
+                    review_status=ReviewStatus.REVIEWED,
+                    review_reason=cand.review_note or f"검수 승인 ({cand.detection_source}, 신뢰도 {int(cand.confidence * 100)}%)",
+                    page_index=cand.page_index if is_pdf_dwg else None,
+                    source_type=getattr(drawing, "source_type", None) or ("PDF" if is_pdf_dwg else ("IMAGE" if is_image_dwg else "DXF")),
+                    file_type=getattr(drawing, "file_type", None) or ("PDF" if is_pdf_dwg else ("IMAGE" if is_image_dwg else "DXF")),
+                    coordinate_space=cand.coordinate_space,
+                )
+            )
+
+    # 4. Calculate Summary Rows
     # Group included items by mapped_item_code
     counts: dict[str, int] = {}
     methods: dict[str, set[str]] = {}
@@ -767,7 +831,8 @@ def build_takeoff_result(
             counts[code] = counts.get(code, 0) + 1
             is_manual_source = (
                 ev.inclusion_status == InclusionStatus.MANUAL_ADDED
-                or ev.entity_type == "MANUAL_POINT"
+                or ev.entity_type in ("MANUAL_POINT", "SYMBOL_CANDIDATE")
+                or ev.block_name.startswith("[CANDIDATE:")
                 or ev.block_name == "[MANUAL]"
             )
             methods.setdefault(code, set()).add("MANUAL" if is_manual_source else "CAD_BLOCK")

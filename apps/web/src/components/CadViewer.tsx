@@ -6,6 +6,7 @@ import {
   PdfPageFeatures,
   PdfTextFeature,
   PdfPathFeature,
+  SymbolCandidate,
 } from "@/types/cad";
 import { ZoomIn, ZoomOut, Maximize2, PlusCircle } from "lucide-react";
 
@@ -35,6 +36,10 @@ interface CadViewerProps {
   showFeatures?: boolean;
   selectedFeatureId?: string | null;
   onSelectFeature?: (feature: PdfTextFeature | PdfPathFeature | null) => void;
+  candidates?: SymbolCandidate[];
+  showCandidates?: boolean;
+  selectedCandidateId?: string | null;
+  onSelectCandidate?: (candidate: SymbolCandidate | null) => void;
 }
 
 export function CadViewer({
@@ -53,6 +58,10 @@ export function CadViewer({
   showFeatures = false,
   selectedFeatureId = null,
   onSelectFeature,
+  candidates = [],
+  showCandidates = true,
+  selectedCandidateId = null,
+  onSelectCandidate,
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -557,6 +566,82 @@ export function CadViewer({
               </g>
             );
           })}
+
+          {/* Issue #23: AI Symbol Candidates Overlay */}
+          {showCandidates && candidates && candidates.length > 0 && (
+            <g className="symbol-candidates-layer">
+              {candidates
+                .filter((c) => {
+                  if (isPdf) return c.page_index === (currentPageIndex ?? 0);
+                  return true;
+                })
+                .map((c) => {
+                  const isSelected = c.candidate_id === selectedCandidateId;
+                  const isAccepted = c.status === "ACCEPTED";
+                  const isRejected = c.status === "REJECTED";
+                  const candY = isTopLeftOrigin ? c.y : -c.y;
+
+                  const bw = Math.max(c.bbox[2] - c.bbox[0], 20);
+                  const bh = Math.max(c.bbox[3] - c.bbox[1], 20);
+                  const bx = isTopLeftOrigin ? c.bbox[0] : c.bbox[0];
+                  const by = isTopLeftOrigin ? c.bbox[1] : -c.bbox[3];
+
+                  const strokeColor = isAccepted
+                    ? "#10b981"
+                    : isRejected
+                    ? "#ef4444"
+                    : "#f59e0b";
+                  const fillColor = isAccepted
+                    ? "rgba(16, 185, 129, 0.2)"
+                    : isRejected
+                    ? "rgba(239, 68, 68, 0.08)"
+                    : "rgba(245, 158, 11, 0.15)";
+
+                  return (
+                    <g
+                      key={c.candidate_id}
+                      data-testid={`candidate-marker-${c.candidate_id}`}
+                      className="pointer-events-auto cursor-pointer interactive-candidate"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectCandidate?.(c);
+                      }}
+                    >
+                      <rect
+                        x={bx}
+                        y={by}
+                        width={bw}
+                        height={bh}
+                        rx={3 / Math.max(scale, 1e-6)}
+                        fill={fillColor}
+                        stroke={isSelected ? "#38bdf8" : strokeColor}
+                        strokeWidth={(isSelected ? 3 : 1.5) / Math.max(scale, 1e-6)}
+                        strokeDasharray={isAccepted ? undefined : `${4 / scale},${2 / scale}`}
+                        opacity={isRejected ? 0.35 : 0.95}
+                        className={isSelected ? "animate-pulse" : ""}
+                      />
+                      <text
+                        x={c.x}
+                        y={candY}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        fontSize={10 / Math.max(scale, 1e-6)}
+                        fill={isAccepted ? "#6ee7b7" : isRejected ? "#fca5a5" : "#fde68a"}
+                        className="font-mono font-bold pointer-events-none select-none"
+                        style={{ textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}
+                      >
+                        {isAccepted
+                          ? `✓ ${c.reviewed_item_code || c.suggested_item_code}`
+                          : isRejected
+                          ? `✕ ${c.suggested_item_code}`
+                          : `? ${c.suggested_item_code}`}
+                      </text>
+                    </g>
+                  );
+                })}
+            </g>
+          )}
 
           {/* PR C: Vector PDF Text & Path Features Overlay */}
           {isPdf &&
