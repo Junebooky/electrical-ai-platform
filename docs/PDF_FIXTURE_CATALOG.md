@@ -33,9 +33,10 @@ uv run python scripts/generate_pdf_fixtures.py
 
 | 파일명 | 크기 (bytes) | SHA-256 (앞 16자리) | 페이지 수 | 주요 특성 및 시험 목적 | 라이선스 |
 |---|---|---|---|---|---|
-| `pdf_b_2page_electrical.pdf` (별칭 `pdf_b_01_two_pages.pdf`) | 959 | `29d80c3a6a3cf1cf` | 2 | P0 핵심 시나리오: 1페이지 A4 세로(595.28×841.89 pt), 2페이지 A4 가로(841.89×595.28 pt). 동일 좌표 (200, 300)에서의 `page_index` 격리 및 5개 잠정(provisional) 수동 기구 집계 | SELF_GENERATED |
-| `pdf_b_rotated_cropbox.pdf` (별칭 `pdf_b_02_rotated_cropbox.pdf`) | 625 | `a08db849b2fffcfa` | 1 | 90° 회전 및 비원점 CropBox `[50, 60, 550, 740]` 적용. 정규 좌표계(`PDF_PAGE_POINT`) 변환(680×500 pt) 및 화면 경계 검증 | SELF_GENERATED |
+| `pdf_b_2page_electrical.pdf` (별칭 `pdf_b_01_two_pages.pdf`) | 985 | `225165c52c040d9b` | 2 | QA_PDF_B_MATRIX PB-01 정답 일치: 1페이지 612×792 pt (ROT0), 2페이지 552×752 pt (CropBox `[24, 24, 776, 576]`, ROT90). 동일 좌표 `(100, 150)`에서의 `page_index` 격리 및 잠정(provisional) 5 EA 적산 검증 | SELF_GENERATED |
+| `pdf_b_rotated_cropbox.pdf` (별칭 `pdf_b_02_rotated_cropbox.pdf`) | 625 | `a08db849b2fffcfa` | 1 | 90° 회전 및 비원점 CropBox `[50, 60, 550, 740]` 적용. 정규 좌표계(`PDF_PAGE_POINT`, 680×500 pt) 변환 및 화면 경계 검증 | SELF_GENERATED |
 | `pdf_b_scanned_mixed.pdf` | 24,439 | `31f62203716d1ba5` | 2 | 1페이지 스캔 도면(Pillow 래스터 이미지 임베딩), 2페이지 벡터 전기 도면. PR B의 "OCR 미지원 / 수동 마커 전용" 고지 배너 노출 및 래스터/벡터 페이지 모두 수동 마커 삽입 가능 검증 | SELF_GENERATED |
+| `pdf_b_oversized_dimension.pdf` | 435 | `b497560da1fc2194` | 1 | 12,000×12,000 pt (축당 10,000 px 및 40MP 초과). P0-03 리소스 DoS 방어 (HTTP 400 거부) 검증 | SELF_GENERATED |
 | `corrupt.pdf` | 94 | `1c404492bf285f57` | 0 (손상) | 비정상 헤더/바이트 누락 PDF. HTTP 400 Bad Request 및 명확한 에러 메시지 반환 검증 | SELF_GENERATED |
 | `encrypted.pdf` | 828 | `e64e1a896d84a7d4` | 1 (암호화) | `password123` 표준 암호화 적용 PDF. HTTP 400 거부 및 "암호화된 PDF는 지원하지 않습니다" 안내 검증 | SELF_GENERATED |
 
@@ -45,16 +46,16 @@ uv run python scripts/generate_pdf_fixtures.py
 
 #### 1) `pdf_b_2page_electrical.pdf`
 - **페이지 구성**:
-  - `page_index: 0`: 폭 595.28 pt, 높이 841.89 pt, 회전 0°
-  - `page_index: 1`: 폭 841.89 pt, 높이 595.28 pt, 회전 0°
+  - `page_index: 0`: 폭 612.0 pt, 높이 792.0 pt, 회전 0°
+  - `page_index: 1`: 표시 폭 552.0 pt, 표시 높이 752.0 pt (원본 800×600 pt, CropBox `[24, 24, 776, 576]`, 회전 90°)
 - **마커 정답셋 (Ground Truth Markers)**:
   - Page 0:
-    1. `p0_lt_1`: `item_code: LIGHT`, `item_name: 다운라이트`, `x: 100.0`, `y: 150.0`, `unit: EA`
-    2. `p0_lt_2`: `item_code: LIGHT`, `item_name: 다운라이트`, `x: 200.0`, `y: 300.0`, `unit: EA` (Page 1과 동일 좌표)
-    3. `p0_lt_3`: `item_code: LIGHT`, `item_name: 다운라이트`, `x: 300.0`, `y: 450.0`, `unit: EA`
+    1. `p0_lt_1`: `item_code: LIGHT`, `item_name: 다운라이트`, `x: 100.0`, `y: 150.0`, `unit: EA` (Page 1과 동일 좌표)
+    2. `p0_lt_2`: `item_code: LIGHT`, `item_name: 다운라이트`, `x: 300.0`, `y: 220.0`, `unit: EA`
+    3. `p0_lt_3`: `item_code: LIGHT`, `item_name: 다운라이트`, `x: 500.0`, `y: 650.0`, `unit: EA`
   - Page 1:
-    4. `p1_ot_1`: `item_code: OUTLET`, `item_name: 콘센트`, `x: 200.0`, `y: 300.0`, `unit: EA` (Page 0과 동일 좌표)
-    5. `p1_ot_2`: `item_code: OUTLET`, `item_name: 콘센트`, `x: 500.0`, `y: 300.0`, `unit: EA`
+    4. `p1_ot_1`: `item_code: OUTLET`, `item_name: 콘센트`, `x: 100.0`, `y: 150.0`, `unit: EA` (Page 0과 동일 좌표)
+    5. `p1_ot_2`: `item_code: OUTLET`, `item_name: 콘센트`, `x: 400.0`, `y: 500.0`, `unit: EA`
 - **예상 집계 결과 (Expected Takeoff)**:
   - 총 수량: **5 EA** (`is_provisional: true`)
   - 품목별: `LIGHT: 3 EA`, `OUTLET: 2 EA`
@@ -94,12 +95,12 @@ uv run python scripts/generate_pdf_fixtures.py
 |---|---|
 | **저장소 URL** | `https://github.com/xundullah/W--KN-BD-residential-electrical-design` |
 | **적용 라이선스** | **MIT License** (저장소 최상위 `LICENSE` 파일 확인) |
-| **도면 내용** | 주택 4개 시트 전기 도면 (단선결선도 Single Line Diagram, 분전반 스케줄 Switchboard Schedule, 실별 전등 배선도 Lighting Layout, 콘센트 전열 배선도 Power Layout) |
-| **저작권 적법성** | 상업적 이용, 복제, 수정, 배포, 서브라이선스 부여가 법적으로 전면 허용됨. 재배포 시 저작권 고지만 유지하면 됨 |
-| **기술적 적합성** | AutoCAD 기반 벡터 선, 텍스트 레이블, 블록 심볼이 온전히 보존된 고품질 다중 페이지 PDF. 뷰어 확대/축소, 폰트 렌더링 호환성 검증에 최적 |
-| **한계 및 주의점** | 영국/유럽 표준 전기 심볼(BS 7671) 계열로 제작되어 한국전기설비규정(KEC/KS C IEC 60364) 심볼 표준과 다소 차이가 있음. PR B에서는 뷰어 렌더링 및 수동 마커 테스트용으로 적합하나, PR C 자동 KEC 적산 모델 학습에는 KEC 표준 기호 데이터셋이 보강되어야 함 |
-| **보안 및 PII 검토** | 일반 주택 샘플 평면도로서 실 거주자 개인정보(PII), 기밀 계약 정보, 민감 주소 등이 전혀 포함되어 있지 않음 |
-| **채택 의견** | **렌더링 및 뷰어 벤치마크용 외부 후보로 승인** (저장소 비대화 방지를 위해 git fixture에는 합성본을 유지하고 필요 시 on-demand 다운로드 검증) |
+| **도면 내용** | 방글라데시 주택 전기 설계 웹/HTML 기반 다이어그램 자료 (단선결선도, 분전반 스케줄, 조명/전열 배선 다이어그램) |
+| **저작권 적법성** | 상업적 이용, 복제, 수정, 배포, 서브라이선스 부여가 법적으로 허용됨. 재배포 시 저작권 고지만 유지하면 됨 |
+| **기술적 적합성** | 웹/벡터 기반 주택 전기 도면 다이어그램. 실제 엔지니어링 CAD 도면과는 레이아웃 차이가 있으나 외부 참고 다이어그램으로 분류 가능 |
+| **한계 및 주의점** | 방글라데시/남아시아 규격 기반의 웹 다이어그램 자료로, KEC(한국전기설비규정/KS C IEC 60364) 심볼 및 실제 국내 아파트/건축 전기 도면과 규격 차이가 큼. PR C 자동 적산 학습 데이터로는 국내 KEC 표준 도면 데이터셋이 필수적임 |
+| **보안 및 PII 검토** | 일반 샘플 다이어그램으로서 실 거주자 개인정보(PII), 기밀 계약 정보, 민감 주소 등이 포함되어 있지 않음 |
+| **채택 의견** | **외부 참고용 후보로 분류** (CI/저장소 비대화 방지 및 KEC 표준과의 괴리로 인해 단위 테스트에는 저장소 내 합성 Fixture 사용) |
 
 ---
 

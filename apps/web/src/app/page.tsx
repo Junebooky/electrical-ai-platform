@@ -46,11 +46,18 @@ export default function WorkspacePage() {
   const [isAddManualMode, setIsAddManualMode] = useState(false);
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
 
+  interface PendingManualMarker {
+    drawingId: string;
+    pageIndex: number;
+    x: number;
+    y: number;
+  }
+
   // Async state & race defense (QA-DEF-04)
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [pendingManualCoord, setPendingManualCoord] = useState<{ x: number; y: number } | null>(null);
+  const [pendingManualCoord, setPendingManualCoord] = useState<PendingManualMarker | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef<number>(0);
@@ -243,9 +250,25 @@ export default function WorkspacePage() {
     return list;
   }, [mappings]);
 
-  // Open Manual Object Dialog (DEC-011 / DEC-012)
+  // Open Manual Object Dialog (DEC-011 / DEC-012 / P0-01)
   const handleAddManualPoint = (x: number, y: number) => {
-    setPendingManualCoord({ x, y });
+    if (!currentDrawing) return;
+    const isPdf = currentDrawing.source_type === "PDF" || currentDrawing.coordinate_space === "PDF_PAGE_POINT";
+    setPendingManualCoord({
+      drawingId: currentDrawing.drawing_id,
+      pageIndex: isPdf ? currentPageIndex : 0,
+      x,
+      y,
+    });
+  };
+
+  // Safe page navigation canceling pending marker on page switch (P0-01)
+  const handlePageChange = (newIndex: number) => {
+    if (pendingManualCoord) {
+      setPendingManualCoord(null);
+    }
+    setCurrentPageIndex(newIndex);
+    setSelectedObjectId(null);
   };
 
   // Confirm manual object addition after mandatory item & reason selection
@@ -256,11 +279,16 @@ export default function WorkspacePage() {
     selectedUnit?: string
   ) => {
     if (!currentProject || !currentDrawing || !pendingManualCoord) return;
+    if (pendingManualCoord.drawingId !== currentDrawing.drawing_id) {
+      setPendingManualCoord(null);
+      return;
+    }
     setIsSaving(true);
     try {
       const manualId = `manual_${Date.now()}`;
       const matched = availableItems.find((i) => i.code === itemCode);
       const unit = matched ? (matched.unit || "EA").trim() : (selectedUnit?.trim() || "EA");
+      const isPdf = currentDrawing.source_type === "PDF" || currentDrawing.coordinate_space === "PDF_PAGE_POINT";
       await api.addManualObject(currentProject.id, currentDrawing.drawing_id, {
         id: manualId,
         drawing_id: currentDrawing.drawing_id,
@@ -270,7 +298,7 @@ export default function WorkspacePage() {
         item_name: matched?.name || itemCode,
         unit: unit,
         note: note ? `[${reason}] ${note}` : `[${reason}] 수동 추가`,
-        page_index: currentDrawing.source_type === "PDF" ? currentPageIndex : 0,
+        page_index: isPdf ? pendingManualCoord.pageIndex : 0,
       });
       setPendingManualCoord(null);
       setIsAddManualMode(false);
@@ -488,10 +516,10 @@ export default function WorkspacePage() {
           {currentDrawing.page_count && currentDrawing.page_count > 1 && (
             <div className="flex items-center gap-2 bg-slate-900/80 px-2 py-1 rounded border border-slate-700">
               <button
-                onClick={() => setCurrentPageIndex((p) => Math.max(0, p - 1))}
-                disabled={currentPageIndex <= 0}
+                onClick={() => handlePageChange(Math.max(0, currentPageIndex - 1))}
+                disabled={Boolean(pendingManualCoord) || currentPageIndex <= 0}
                 className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
-                title="이전 페이지"
+                title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "이전 페이지"}
               >
                 ◀
               </button>
@@ -499,10 +527,10 @@ export default function WorkspacePage() {
                 {currentPageIndex + 1} / {currentDrawing.page_count} 페이지
               </span>
               <button
-                onClick={() => setCurrentPageIndex((p) => Math.min((currentDrawing.page_count || 1) - 1, p + 1))}
-                disabled={currentPageIndex >= (currentDrawing.page_count || 1) - 1}
+                onClick={() => handlePageChange(Math.min((currentDrawing.page_count || 1) - 1, currentPageIndex + 1))}
+                disabled={Boolean(pendingManualCoord) || currentPageIndex >= (currentDrawing.page_count || 1) - 1}
                 className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
-                title="다음 페이지"
+                title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "다음 페이지"}
               >
                 ▶
               </button>

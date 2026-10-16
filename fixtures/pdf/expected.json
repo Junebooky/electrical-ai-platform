@@ -5,24 +5,24 @@
   "fixtures": {
     "pdf_b_2page_electrical.pdf": {
       "filename": "pdf_b_2page_electrical.pdf",
-      "sha256": "29d80c3a6a3cf1cfdc4352ce043cd8452bf8fe9483fba91a95d7ed8a3906af32",
-      "file_size_bytes": 959,
+      "sha256": "225165c5519262c7a28a6c1ec41292c53b570c22c3e6b992487f3bfb89eeba58",
+      "file_size_bytes": 985,
       "page_count": 2,
       "licensing": "SELF_GENERATED",
-      "test_scope": "Multi-page A4 portrait/landscape electrical plan, page_index isolation, provisional manual takeoff",
+      "test_scope": "Multi-page electrical plan (Page 0: 612x792 pt ROT0, Page 1: 552x752 pt ROT90 CropBox offset), page_index isolation, provisional manual takeoff",
       "pages": [
         {
           "page_index": 0,
           "dimensions_pt": {
-            "width": 595.28,
-            "height": 841.89
+            "width": 612.0,
+            "height": 792.0
           },
           "rotation": 0,
           "cropbox": [
             0.0,
             0.0,
-            595.28,
-            841.89
+            612.0,
+            792.0
           ],
           "manual_markers": [
             {
@@ -37,16 +37,16 @@
               "id": "p0_lt_2",
               "item_code": "LIGHT",
               "item_name": "다운라이트",
-              "x": 200.0,
-              "y": 300.0,
+              "x": 300.0,
+              "y": 220.0,
               "unit": "EA"
             },
             {
               "id": "p0_lt_3",
               "item_code": "LIGHT",
               "item_name": "다운라이트",
-              "x": 300.0,
-              "y": 450.0,
+              "x": 500.0,
+              "y": 650.0,
               "unit": "EA"
             }
           ]
@@ -54,31 +54,31 @@
         {
           "page_index": 1,
           "dimensions_pt": {
-            "width": 841.89,
-            "height": 595.28
+            "width": 552.0,
+            "height": 752.0
           },
-          "rotation": 0,
+          "rotation": 90,
           "cropbox": [
-            0.0,
-            0.0,
-            841.89,
-            595.28
+            24.0,
+            24.0,
+            776.0,
+            576.0
           ],
           "manual_markers": [
             {
               "id": "p1_ot_1",
               "item_code": "OUTLET",
               "item_name": "콘센트",
-              "x": 200.0,
-              "y": 300.0,
+              "x": 100.0,
+              "y": 150.0,
               "unit": "EA"
             },
             {
               "id": "p1_ot_2",
               "item_code": "OUTLET",
               "item_name": "콘센트",
-              "x": 500.0,
-              "y": 300.0,
+              "x": 400.0,
+              "y": 500.0,
               "unit": "EA"
             }
           ]

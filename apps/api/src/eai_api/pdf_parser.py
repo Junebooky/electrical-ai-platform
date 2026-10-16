@@ -24,6 +24,8 @@ from cad_engine.schema import (
 MAX_PDF_FILE_SIZE = 50 * 1024 * 1024  # 50 MiB
 MAX_PDF_PAGES = 100  # P0 DoS prevention limit
 DEFAULT_RENDER_DPI = 144  # 144 DPI (scale 2.0x, crystal clear for electrical symbol markers)
+MAX_RENDER_AXIS_PX = 10_000  # P0-03: Max 10,000 px on any single axis
+MAX_RENDER_TOTAL_PIXELS = 40_000_000  # P0-03: Max 40 MP per page (~160MB raw bitmap budget)
 
 
 class PdfError(Exception):
@@ -116,6 +118,12 @@ def parse_pdf_document(pdf_bytes: bytes) -> PdfDocumentInfo:
         if len(doc) != page_count:
             # Fallback to pdfium page count if mismatch
             page_count = len(doc)
+            if page_count > MAX_PDF_PAGES:
+                raise PdfPageLimitExceededError(
+                    f"PDF 페이지 수({page_count}페이지)가 최대 허용 한도({MAX_PDF_PAGES}페이지)를 초과했습니다."
+                )
+    except (PdfEncryptedError, PdfPageLimitExceededError, PdfCorruptError):
+        raise
     except pdfium.PdfiumError as e:
         msg = str(e)
         if "password" in msg.lower():
@@ -154,6 +162,16 @@ def parse_pdf_document(pdf_bytes: bytes) -> PdfDocumentInfo:
         rendered_w = round(display_w * scale)
         rendered_h = round(display_h * scale)
 
+        # P0-03: Resource/dimension DoS defense (single-axis and total pixel budget)
+        if rendered_w > MAX_RENDER_AXIS_PX or rendered_h > MAX_RENDER_AXIS_PX:
+            raise PdfCorruptError(
+                f"PDF {idx}페이지 렌더링 해상도({rendered_w}x{rendered_h} px)가 단일 축 상한({MAX_RENDER_AXIS_PX} px)을 초과했습니다."
+            )
+        if rendered_w * rendered_h > MAX_RENDER_TOTAL_PIXELS:
+            raise PdfCorruptError(
+                f"PDF {idx}페이지 렌더링 총 픽셀 수({rendered_w * rendered_h:,} px)가 최대 안전 허용량({MAX_RENDER_TOTAL_PIXELS:,} px)을 초과했습니다."
+            )
+
         pages_info.append(
             PdfPageInfo(
                 page_index=idx,
@@ -183,7 +201,7 @@ def render_pdf_page_image(
 ) -> tuple[bytes, int, int]:
     """Render a single PDF page into PNG raster image bytes.
 
-    Memory-safety: Decodes only the requested page on-demand.
+    Memory-safety: Decodes only the requested page on-demand with bounded pixel budget.
     """
     scale = dpi / 72.0
     try:
@@ -195,6 +213,20 @@ def render_pdf_page_image(
         raise IndexError(f"PDF 페이지 인덱스 {page_index}가 유효 범위 [0, {len(doc)})를 벗어났습니다.")
 
     page = doc[page_index]
+    display_w, display_h = page.get_size()
+    rendered_w = round(display_w * scale)
+    rendered_h = round(display_h * scale)
+
+    # P0-03: Pre-render dimension and memory allocation budget checks
+    if rendered_w > MAX_RENDER_AXIS_PX or rendered_h > MAX_RENDER_AXIS_PX:
+        raise PdfCorruptError(
+            f"PDF {page_index}페이지 렌더링 해상도({rendered_w}x{rendered_h} px)가 단일 축 상한({MAX_RENDER_AXIS_PX} px)을 초과했습니다."
+        )
+    if rendered_w * rendered_h > MAX_RENDER_TOTAL_PIXELS:
+        raise PdfCorruptError(
+            f"PDF {page_index}페이지 렌더링 총 픽셀 수({rendered_w * rendered_h:,} px)가 최대 안전 허용량({MAX_RENDER_TOTAL_PIXELS:,} px)을 초과했습니다."
+        )
+
     pil_image = page.render(scale=scale).to_pil()
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG", optimize=True)

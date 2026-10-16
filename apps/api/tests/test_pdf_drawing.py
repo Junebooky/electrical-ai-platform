@@ -72,6 +72,13 @@ def pdf_scanned_mixed() -> bytes:
     return p.read_bytes()
 
 
+@pytest.fixture
+def pdf_oversized() -> bytes:
+    p = FIXTURES_DIR / "pdf_b_oversized_dimension.pdf"
+    assert p.exists(), f"Missing fixture {p}"
+    return p.read_bytes()
+
+
 def test_pdf_upload_metadata_multipage(client: TestClient, pdf_two_pages: bytes) -> None:
     """PDF multi-page upload returns page count, per-page dimensions, and canonical coordinate space."""
     proj_res = client.post("/api/projects", json={"name": "PDF 다중페이지 테스트"})
@@ -95,17 +102,17 @@ def test_pdf_upload_metadata_multipage(client: TestClient, pdf_two_pages: bytes)
     pages = meta["pages"]
     assert len(pages) == 2
 
-    # Page 0: A4 portrait
+    # Page 0: 612 x 792 pt, ROT0
     assert pages[0]["page_index"] == 0
-    assert abs(pages[0]["display_width_pt"] - 595.28) < 1.0
-    assert abs(pages[0]["display_height_pt"] - 841.89) < 1.0
+    assert abs(pages[0]["display_width_pt"] - 612.0) < 1.0
+    assert abs(pages[0]["display_height_pt"] - 792.0) < 1.0
     assert pages[0]["rotation"] == 0
 
-    # Page 1: A4 landscape
+    # Page 1: CropBox offset ROT90 -> display 552 x 752 pt
     assert pages[1]["page_index"] == 1
-    assert abs(pages[1]["display_width_pt"] - 841.89) < 1.0
-    assert abs(pages[1]["display_height_pt"] - 595.28) < 1.0
-    assert pages[1]["rotation"] == 0
+    assert abs(pages[1]["display_width_pt"] - 552.0) < 1.0
+    assert abs(pages[1]["display_height_pt"] - 752.0) < 1.0
+    assert pages[1]["rotation"] == 90
 
     # Drawing detail GET
     drawing_id = meta["drawing_id"]
@@ -173,20 +180,20 @@ def test_pdf_multipage_manual_takeoff_scenario(client: TestClient, pdf_two_pages
     assert len(t0["summary"]) == 0
     assert len(t0["evidence"]) == 0
 
-    # Page 0: 3 LIGHT items (including one at x=200.0, y=300.0)
+    # Page 0: 3 LIGHT items (including one at shared x=100.0, y=150.0)
     p0_items = [
         {"id": "p0_lt_1", "drawing_id": drawing_id, "page_index": 0, "x": 100.0, "y": 150.0, "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"},
-        {"id": "p0_lt_2", "drawing_id": drawing_id, "page_index": 0, "x": 200.0, "y": 300.0, "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"},
-        {"id": "p0_lt_3", "drawing_id": drawing_id, "page_index": 0, "x": 300.0, "y": 450.0, "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"},
+        {"id": "p0_lt_2", "drawing_id": drawing_id, "page_index": 0, "x": 300.0, "y": 220.0, "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"},
+        {"id": "p0_lt_3", "drawing_id": drawing_id, "page_index": 0, "x": 500.0, "y": 650.0, "item_code": "LIGHT", "item_name": "다운라이트", "unit": "EA"},
     ]
     for item in p0_items:
         res = client.post(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects", json=item)
         assert res.status_code == 200
 
-    # Page 1: 2 OUTLET items (including one at x=200.0, y=300.0)
+    # Page 1: 2 OUTLET items (including one at shared x=100.0, y=150.0)
     p1_items = [
-        {"id": "p1_ot_1", "drawing_id": drawing_id, "page_index": 1, "x": 200.0, "y": 300.0, "item_code": "OUTLET", "item_name": "콘센트", "unit": "EA"},
-        {"id": "p1_ot_2", "drawing_id": drawing_id, "page_index": 1, "x": 500.0, "y": 300.0, "item_code": "OUTLET", "item_name": "콘센트", "unit": "EA"},
+        {"id": "p1_ot_1", "drawing_id": drawing_id, "page_index": 1, "x": 100.0, "y": 150.0, "item_code": "OUTLET", "item_name": "콘센트", "unit": "EA"},
+        {"id": "p1_ot_2", "drawing_id": drawing_id, "page_index": 1, "x": 400.0, "y": 500.0, "item_code": "OUTLET", "item_name": "콘센트", "unit": "EA"},
     ]
     for item in p1_items:
         res = client.post(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects", json=item)
@@ -219,14 +226,14 @@ def test_pdf_multipage_manual_takeoff_scenario(client: TestClient, pdf_two_pages
     assert ev_by_id["p0_lt_1"]["coordinate_space"] == "PDF_PAGE_POINT"
     assert ev_by_id["p0_lt_1"]["source_type"] == "PDF"
 
-    # Verify identical coords (200, 300) have distinct page_index!
-    assert ev_by_id["p0_lt_2"]["page_index"] == 0
-    assert ev_by_id["p0_lt_2"]["x"] == 200.0
-    assert ev_by_id["p0_lt_2"]["y"] == 300.0
+    # Verify identical coords (100, 150) have distinct page_index!
+    assert ev_by_id["p0_lt_1"]["page_index"] == 0
+    assert ev_by_id["p0_lt_1"]["x"] == 100.0
+    assert ev_by_id["p0_lt_1"]["y"] == 150.0
 
     assert ev_by_id["p1_ot_1"]["page_index"] == 1
-    assert ev_by_id["p1_ot_1"]["x"] == 200.0
-    assert ev_by_id["p1_ot_1"]["y"] == 300.0
+    assert ev_by_id["p1_ot_1"]["x"] == 100.0
+    assert ev_by_id["p1_ot_1"]["y"] == 150.0
 
     # Reload check: GET /manual-objects returns all 5 items with page_index preserved
     man_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects")
@@ -258,19 +265,26 @@ def test_pdf_boundary_and_validation_defense(client: TestClient, pdf_two_pages: 
     assert res_neg.status_code == 400
     assert "벗어났습니다" in res_neg.json()["detail"]
 
-    # 2. Page 0 width is 595.28: x=600.0 on Page 0 must be rejected
+    # 2. Page 0 width is 612.0: x=620.0 on Page 0 must be rejected
     res_p0_oob = client.post(
         f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
-        json={"id": "m_oob_p0", "drawing_id": drawing_id, "page_index": 0, "x": 600.0, "y": 100.0, "item_code": "LIGHT", "unit": "EA"},
+        json={"id": "m_oob_p0", "drawing_id": drawing_id, "page_index": 0, "x": 620.0, "y": 100.0, "item_code": "LIGHT", "unit": "EA"},
     )
     assert res_p0_oob.status_code == 400
 
-    # 3. But on Page 1 (landscape width 841.89), x=600.0 is VALID!
+    # 3. On Page 1 (display height 752.0), y=700.0 is VALID
     res_p1_ok = client.post(
         f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
-        json={"id": "m_ok_p1", "drawing_id": drawing_id, "page_index": 1, "x": 600.0, "y": 100.0, "item_code": "LIGHT", "unit": "EA"},
+        json={"id": "m_ok_p1", "drawing_id": drawing_id, "page_index": 1, "x": 500.0, "y": 700.0, "item_code": "LIGHT", "unit": "EA"},
     )
     assert res_p1_ok.status_code == 200
+
+    # But y=800.0 on Page 1 exceeds display height (752.0) -> rejected
+    res_p1_oob = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "m_oob_p1", "drawing_id": drawing_id, "page_index": 1, "x": 500.0, "y": 800.0, "item_code": "LIGHT", "unit": "EA"},
+    )
+    assert res_p1_oob.status_code == 400
 
     # 4. Out of range page_index: page_index=2 on 2-page document -> 400
     res_bad_page = client.post(
@@ -673,4 +687,115 @@ def test_pdf_expected_catalog_oracle(client: TestClient) -> None:
             # Reload markers check
             man_list = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects").json()
             assert len(man_list) == ops["reload_marker_count"]
+
+
+def test_pdf_manual_object_duplicate_id_defense(client: TestClient, pdf_two_pages: bytes) -> None:
+    """P0-02 (DOMAIN): Duplicate source_object_id handling.
+
+    - Re-posting identical payload with same ID is idempotent (200 OK, count stays 1, evidence stays 1).
+    - Re-posting conflicting payload with same ID raises 409 Conflict.
+    - Delete and restore works accurately.
+    """
+    proj = client.post("/api/projects", json={"name": "중복 ID 방어 검증"}).json()
+    proj_id = proj["id"]
+
+    dwg = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("dup_test.pdf", pdf_two_pages, "application/pdf")},
+    ).json()
+    drawing_id = dwg["drawing_id"]
+
+    item_payload = {
+        "id": "dup_marker_1",
+        "drawing_id": drawing_id,
+        "page_index": 0,
+        "x": 150.0,
+        "y": 200.0,
+        "item_code": "LIGHT",
+        "item_name": "다운라이트",
+        "unit": "EA",
+    }
+
+    # 1. Initial creation -> 200
+    res1 = client.post(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects", json=item_payload)
+    assert res1.status_code == 200
+
+    t1 = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff").json()
+    assert sum(s["quantity"] for s in t1["summary"]) == 1
+    assert len(t1["evidence"]) == 1
+
+    # 2. Duplicate submission with IDENTICAL payload (network retry scenario) -> idempotent 200, no count increment!
+    res_retry = client.post(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects", json=item_payload)
+    assert res_retry.status_code == 200
+
+    t2 = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff").json()
+    assert sum(s["quantity"] for s in t2["summary"]) == 1  # Still 1 EA!
+    assert len(t2["evidence"]) == 1  # Exactly 1 evidence row
+
+    # 3. Duplicate submission with CONFLICTING payload (same ID, different item_code) -> 409 Conflict
+    conflict_payload = dict(item_payload)
+    conflict_payload["item_code"] = "OUTLET"
+    conflict_payload["item_name"] = "콘센트"
+    res_conflict = client.post(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects", json=conflict_payload)
+    assert res_conflict.status_code == 409
+    assert "중복 충돌" in res_conflict.json()["detail"] or "이미 다른 속성" in res_conflict.json()["detail"]
+
+    # 4. Duplicate submission with CONFLICTING coordinates (same ID, different x/y) -> 409 Conflict
+    conflict_coord = dict(item_payload)
+    conflict_coord["x"] = 300.0
+    res_conflict2 = client.post(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects", json=conflict_coord)
+    assert res_conflict2.status_code == 409
+
+    # 5. Delete marker -> count becomes 0
+    del_res = client.delete(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects/dup_marker_1")
+    assert del_res.status_code == 200
+
+    t3 = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff").json()
+    assert sum(s["quantity"] for s in t3["summary"]) == 0
+    assert len(t3["evidence"]) == 0
+
+
+def test_pdf_oversized_dimension_and_lazy_render_defense(
+    client: TestClient,
+    pdf_oversized: bytes,
+    pdf_two_pages: bytes,
+    tmp_path: Path,
+) -> None:
+    """P0-03: Security budget limits (dimension bomb rejection) and lazy on-demand page rendering.
+
+    - Oversized PDF exceeding pixel budget (12,000x12,000 pt) is rejected with HTTP 400.
+    - Normal multi-page PDF upload does NOT pre-render 50 pages synchronously.
+    - Rendering happens on-demand when /pages/{page_index}/image is requested.
+    """
+    proj = client.post("/api/projects", json={"name": "안정성 예외 방어"}).json()
+    proj_id = proj["id"]
+
+    # 1. Dimension bomb rejection -> HTTP 400
+    res_oversized = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("bomb.pdf", pdf_oversized, "application/pdf")},
+    )
+    assert res_oversized.status_code == 400
+    assert "초과했습니다" in res_oversized.json()["detail"]
+
+    # 2. Normal upload -> verify NO pre-rendered PNGs on disk immediately after upload
+    res_normal = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("lazy_test.pdf", pdf_two_pages, "application/pdf")},
+    )
+    assert res_normal.status_code == 200
+    dwg_id = res_normal.json()["drawing_id"]
+
+    from eai_api import app as app_module
+
+    pages_disk_dir = app_module.storage.projects_dir / proj_id / "drawings" / dwg_id / "pages"
+    # Immediately after upload, pages directory should not have cached images (zero pre-render)
+    p0_disk_file = pages_disk_dir / "page_0.png"
+    assert not p0_disk_file.exists(), "Page 0 image was unexpectedly pre-rendered during upload!"
+
+    # 3. Now request page 0 image on demand -> returns 200 and caches page_0.png
+    p0_res = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/pages/0/image")
+    assert p0_res.status_code == 200
+    assert p0_res.headers["content-type"] == "image/png"
+    assert p0_disk_file.exists(), "Page 0 image was not cached after on-demand request!"
 

@@ -272,7 +272,12 @@ def get_drawing(project_id: str, drawing_id: str) -> NormalizedDrawing:
 
 @app.get("/api/projects/{project_id}/drawings/{drawing_id}/pages/{page_index}/image")
 def get_drawing_page_image(project_id: str, drawing_id: str, page_index: int) -> Response:
-    image_path = storage.get_drawing_page_image_path(project_id, drawing_id, page_index)
+    try:
+        image_path = storage.get_drawing_page_image_path(project_id, drawing_id, page_index)
+    except (PdfCorruptError, PdfPageLimitExceededError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except IndexError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     if not image_path or not image_path.exists():
         raise HTTPException(status_code=404, detail=f"페이지({page_index}) 이미지 파일을 찾을 수 없습니다.")
     return Response(
@@ -286,7 +291,12 @@ def get_drawing_page_image(project_id: str, drawing_id: str, page_index: int) ->
 def get_drawing_image(project_id: str, drawing_id: str, page: int = Query(default=0, ge=0)) -> Response:
     meta = storage.get_drawing_meta(project_id, drawing_id)
     if meta and meta.get("source_type") == "PDF":
-        image_path = storage.get_drawing_page_image_path(project_id, drawing_id, page)
+        try:
+            image_path = storage.get_drawing_page_image_path(project_id, drawing_id, page)
+        except (PdfCorruptError, PdfPageLimitExceededError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except IndexError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         if not image_path or not image_path.exists():
             raise HTTPException(status_code=404, detail="PDF 도면 페이지 이미지 파일을 찾을 수 없습니다.")
         return Response(
@@ -577,6 +587,26 @@ def add_manual_object(
                     f"매핑되지 않은 수동 전용 품목('{item.item_code}')은 P0 정책(M-UNIT-01)상 'EA' 단위만 허용됩니다 "
                     f"(요청 단위: '{item.unit}')."
                 ),
+            )
+
+    # P0-02 (DOMAIN): Duplicate ID defense (idempotent replay on identical payload, 409 Conflict on mismatch)
+    existing = next((o for o in objs if o.id == item.id), None)
+    if existing is not None:
+        is_identical = (
+            math.isclose(existing.x, item.x, abs_tol=1e-5)
+            and math.isclose(existing.y, item.y, abs_tol=1e-5)
+            and existing.item_code == item.item_code
+            and (existing.item_name or "") == (item.item_name or "")
+            and existing.unit == item.unit
+            and existing.drawing_id == item.drawing_id
+            and getattr(existing, "page_index", None) == getattr(item, "page_index", None)
+        )
+        if is_identical:
+            return existing
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"수동 기구 ID '{item.id}'가 이미 다른 속성으로 등록되어 있습니다 (중복 충돌).",
             )
 
     objs.append(item)

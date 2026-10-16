@@ -151,20 +151,6 @@ class Storage:
         if not (d_dir / "manual_objects.json").exists():
             self._save_json(d_dir / "manual_objects.json", [])
 
-        # 5. Pre-render and cache PDF pages on demand (safe DoS bounds)
-        if source_type == "PDF" and raw_bytes is not None:
-            pages_dir = d_dir / "pages"
-            pages_dir.mkdir(parents=True, exist_ok=True)
-            for idx in range(min(page_count, 50)):
-                page_img_path = pages_dir / f"page_{idx}.png"
-                if not page_img_path.exists():
-                    try:
-                        from .pdf_parser import render_pdf_page_image
-                        png_bytes, _, _ = render_pdf_page_image(raw_bytes, idx)
-                        page_img_path.write_bytes(png_bytes)
-                    except Exception:
-                        pass
-
         return d_dir
 
     def get_raw_drawing_path(self, project_id: str, drawing_id: str) -> Path | None:
@@ -189,22 +175,26 @@ class Storage:
     def get_drawing_page_image_path(
         self, project_id: str, drawing_id: str, page_index: int = 0
     ) -> Path | None:
+        meta = self.get_drawing_meta(project_id, drawing_id)
+        if meta and meta.get("source_type") == "PDF":
+            page_count = int(meta.get("page_count", 1))
+            if page_index < 0 or page_index >= page_count:
+                return None
+
         d_dir = self.projects_dir / project_id / "drawings" / drawing_id
         page_img = d_dir / "pages" / f"page_{page_index}.png"
         if page_img.exists():
             return page_img
-        # On-demand fallback: if raw.pdf exists, render page now
+
+        # P0-03: Bounded lazy-on-demand render (renders single requested page on demand)
         raw_pdf = d_dir / "raw.pdf"
         if raw_pdf.exists():
-            try:
-                from .pdf_parser import render_pdf_page_image
-                png_bytes, _, _ = render_pdf_page_image(raw_pdf.read_bytes(), page_index)
-                pages_dir = d_dir / "pages"
-                pages_dir.mkdir(parents=True, exist_ok=True)
-                page_img.write_bytes(png_bytes)
-                return page_img
-            except Exception:
-                pass
+            from .pdf_parser import render_pdf_page_image
+            png_bytes, _, _ = render_pdf_page_image(raw_pdf.read_bytes(), page_index)
+            pages_dir = d_dir / "pages"
+            pages_dir.mkdir(parents=True, exist_ok=True)
+            page_img.write_bytes(png_bytes)
+            return page_img
         return None
 
     def get_drawing_image_path(self, project_id: str, drawing_id: str) -> Path | None:

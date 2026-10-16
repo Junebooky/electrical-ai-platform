@@ -2,18 +2,21 @@
 
 Generates:
 1. pdf_b_2page_electrical.pdf (and alias pdf_b_01_two_pages.pdf)
-   - 2-page electrical drawing: A4 portrait (Page 0) + A4 landscape (Page 1)
-   - Distinct coordinates and shared (200, 300) coordinate testing page_index isolation.
+   - Matches QA_PDF_B_MATRIX PB-01 exact oracle:
+     Page 0: 612.0 x 792.0 pt, ROT0, markers (100, 150), (300, 220), (500, 650) -> 3 LIGHT
+     Page 1: 552.0 x 752.0 pt (CropBox [24, 24, 776, 576] on 800x600 pt, ROT90), markers (100, 150), (400, 500) -> 2 OUTLET
+     Shared coordinate (100, 150) testing page_index isolation, total 5 provisional EA items.
 2. pdf_b_rotated_cropbox.pdf (and alias pdf_b_02_rotated_cropbox.pdf)
-   - 90-degree rotated page with non-zero CropBox [50, 60, 550, 740].
+   - 90-degree rotated page with non-zero CropBox [50, 60, 550, 740] -> display 680.0 x 500.0 pt.
 3. pdf_b_scanned_mixed.pdf
    - Mixed raster-only scan (Page 0, 800x600 pt) + vector electrical (Page 1, 800x600 pt).
-   - Validates OCR-unsupported notice and manual marker placement on both raster and vector pages.
-4. corrupt.pdf
+4. pdf_b_oversized_dimension.pdf
+   - P0-03 DoS defense test: 12,000 x 12,000 pt (exceeds single-axis and total pixel budget).
+5. corrupt.pdf
    - Invalid truncated PDF syntax for 400 rejection test.
-5. encrypted.pdf
+6. encrypted.pdf
    - Password-protected PDF for 400 rejection test.
-6. fixtures/pdf/expected.json & expected_takeoff.json
+7. fixtures/pdf/expected.json & expected_takeoff.json
    - Deterministic ground truth dataset with sha256, dimensions, markers, and expected takeoff oracle.
 """
 
@@ -23,6 +26,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
@@ -34,28 +38,32 @@ def generate_fixtures() -> None:
     fixtures_dir.mkdir(parents=True, exist_ok=True)
 
     # =========================================================================
-    # 1. pdf_b_2page_electrical.pdf / pdf_b_01_two_pages.pdf
+    # 1. pdf_b_2page_electrical.pdf / pdf_b_01_two_pages.pdf (A04 exact geometry)
     # =========================================================================
     writer1 = PdfWriter()
-    # Page 0: A4 portrait (595.28 x 841.89 pt)
-    page1 = writer1.add_blank_page(width=595.28, height=841.89)
+    # Page 0: 612 x 792 pt, ROT0
+    page1 = writer1.add_blank_page(width=612.0, height=792.0)
     stream1 = DecodedStreamObject()
     stream1.set_data(
         b"q\n"
-        b"0.9 0.9 0.9 rg 20 20 555 801 re f\n"
-        b"0 0 0 RG 2 w 40 40 515 761 re s\n"
+        b"0.9 0.9 0.9 rg 20 20 572 752 re f\n"
+        b"0 0 0 RG 2 w 40 40 532 712 re s\n"
         b"0.2 0.4 0.8 RG 1 w 100 100 200 200 re s\n"
         b"Q\n"
     )
     page1[NameObject("/Contents")] = writer1._add_object(stream1)
 
-    # Page 1: A4 landscape (841.89 x 595.28 pt)
-    page2 = writer1.add_blank_page(width=841.89, height=595.28)
+    # Page 1: MediaBox 800 x 600 pt, CropBox [24, 24, 776, 576] (752x552), rotate(90) -> display 552 x 752 pt
+    page2 = writer1.add_blank_page(width=800.0, height=600.0)
+    page2[NameObject("/CropBox")] = ArrayObject(
+        [FloatObject(24), FloatObject(24), FloatObject(776), FloatObject(576)]
+    )
+    page2.rotate(90)
     stream2 = DecodedStreamObject()
     stream2.set_data(
         b"q\n"
-        b"0.95 0.95 0.9 rg 30 30 781 535 re f\n"
-        b"0 0 0 RG 2 w 50 50 741 495 re s\n"
+        b"0.95 0.95 0.9 rg 30 30 740 540 re f\n"
+        b"0 0 0 RG 2 w 50 50 700 500 re s\n"
         b"0.8 0.2 0.2 RG 1 w 150 150 300 200 re s\n"
         b"Q\n"
     )
@@ -100,22 +108,18 @@ def generate_fixtures() -> None:
     # =========================================================================
     # 3. pdf_b_scanned_mixed.pdf (Page 0: Scanned raster, Page 1: Vector)
     # =========================================================================
-    # Page 0: High-fidelity simulated scanned drawing with electrical symbols
     img = Image.new("RGB", (800, 600), color=(252, 250, 245))
     draw = ImageDraw.Draw(img)
-    # Drawing border & title block
     draw.rectangle([40, 40, 760, 560], outline=(50, 50, 50), width=2)
     draw.rectangle([500, 480, 750, 550], outline=(50, 50, 50), width=1)
     draw.text((510, 490), "PLAN: SCANNED 1F POWER", fill=(0, 0, 0))
     draw.text((510, 510), "SCALE: 1/100 (RASTER ONLY)", fill=(0, 0, 0))
     draw.text((510, 530), "NOTICE: MANUAL TAKEOFF ONLY", fill=(180, 0, 0))
-    # Room partitions
     draw.line([(100, 100), (450, 100), (450, 450), (100, 450), (100, 100)], fill=(80, 80, 80), width=2)
-    # Electrical symbols (Switch & Outlet)
     draw.ellipse([200, 200, 230, 230], outline=(180, 0, 0), width=2)
-    draw.text((208, 208), "S", fill=(180, 0, 0))  # Switch symbol at (215, 215)
+    draw.text((208, 208), "S", fill=(180, 0, 0))
     draw.rectangle([350, 300, 380, 330], outline=(0, 100, 200), width=2)
-    draw.text((358, 308), "O", fill=(0, 100, 200))  # Outlet symbol at (365, 315)
+    draw.text((358, 308), "O", fill=(0, 100, 200))
 
     raster_buf = io.BytesIO()
     img.save(raster_buf, format="PDF", resolution=72.0)
@@ -124,7 +128,6 @@ def generate_fixtures() -> None:
     writer3 = PdfWriter()
     writer3.add_page(PdfReader(raster_buf).pages[0])
 
-    # Page 1: Vector electrical page
     page_vec = writer3.add_blank_page(width=800.0, height=600.0)
     stream_vec = DecodedStreamObject()
     stream_vec.set_data(
@@ -147,7 +150,20 @@ def generate_fixtures() -> None:
     print(f"Generated pdf_b_scanned_mixed.pdf ({len(p3_bytes)} bytes, sha256={sha3[:8]}...)")
 
     # =========================================================================
-    # 4. corrupt.pdf
+    # 4. pdf_b_oversized_dimension.pdf (P0-03 DoS defense test: 12,000 x 12,000 pt)
+    # =========================================================================
+    writer_over = PdfWriter()
+    writer_over.add_blank_page(width=12000.0, height=12000.0)
+    buf_over = io.BytesIO()
+    writer_over.write(buf_over)
+    over_bytes = buf_over.getvalue()
+    over_path = fixtures_dir / "pdf_b_oversized_dimension.pdf"
+    over_path.write_bytes(over_bytes)
+    sha_over = hashlib.sha256(over_bytes).hexdigest()
+    print(f"Generated pdf_b_oversized_dimension.pdf ({len(over_bytes)} bytes, sha256={sha_over[:8]}...)")
+
+    # =========================================================================
+    # 5. corrupt.pdf
     # =========================================================================
     corrupt_bytes = (
         b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
@@ -159,7 +175,7 @@ def generate_fixtures() -> None:
     print(f"Generated corrupt.pdf ({len(corrupt_bytes)} bytes, sha256={sha_corrupt[:8]}...)")
 
     # =========================================================================
-    # 5. encrypted.pdf
+    # 6. encrypted.pdf
     # =========================================================================
     writer_enc = PdfWriter()
     writer_enc.add_blank_page(width=300, height=300)
@@ -173,10 +189,8 @@ def generate_fixtures() -> None:
     print(f"Generated encrypted.pdf ({len(enc_bytes)} bytes, sha256={sha_enc[:8]}...)")
 
     # =========================================================================
-    # 6. expected.json & expected_takeoff.json
+    # 7. expected.json & expected_takeoff.json
     # =========================================================================
-    from typing import Any
-
     expected_catalog: dict[str, Any] = {
         "version": "1.0.0",
         "generated_by": "scripts/generate_pdf_fixtures.py",
@@ -188,27 +202,27 @@ def generate_fixtures() -> None:
                 "file_size_bytes": len(p1_bytes),
                 "page_count": 2,
                 "licensing": "SELF_GENERATED",
-                "test_scope": "Multi-page A4 portrait/landscape electrical plan, page_index isolation, provisional manual takeoff",
+                "test_scope": "Multi-page electrical plan (Page 0: 612x792 pt ROT0, Page 1: 552x752 pt ROT90 CropBox offset), page_index isolation, provisional manual takeoff",
                 "pages": [
                     {
                         "page_index": 0,
-                        "dimensions_pt": {"width": 595.28, "height": 841.89},
+                        "dimensions_pt": {"width": 612.0, "height": 792.0},
                         "rotation": 0,
-                        "cropbox": [0.0, 0.0, 595.28, 841.89],
+                        "cropbox": [0.0, 0.0, 612.0, 792.0],
                         "manual_markers": [
                             {"id": "p0_lt_1", "item_code": "LIGHT", "item_name": "다운라이트", "x": 100.0, "y": 150.0, "unit": "EA"},
-                            {"id": "p0_lt_2", "item_code": "LIGHT", "item_name": "다운라이트", "x": 200.0, "y": 300.0, "unit": "EA"},
-                            {"id": "p0_lt_3", "item_code": "LIGHT", "item_name": "다운라이트", "x": 300.0, "y": 450.0, "unit": "EA"},
+                            {"id": "p0_lt_2", "item_code": "LIGHT", "item_name": "다운라이트", "x": 300.0, "y": 220.0, "unit": "EA"},
+                            {"id": "p0_lt_3", "item_code": "LIGHT", "item_name": "다운라이트", "x": 500.0, "y": 650.0, "unit": "EA"},
                         ],
                     },
                     {
                         "page_index": 1,
-                        "dimensions_pt": {"width": 841.89, "height": 595.28},
-                        "rotation": 0,
-                        "cropbox": [0.0, 0.0, 841.89, 595.28],
+                        "dimensions_pt": {"width": 552.0, "height": 752.0},
+                        "rotation": 90,
+                        "cropbox": [24.0, 24.0, 776.0, 576.0],
                         "manual_markers": [
-                            {"id": "p1_ot_1", "item_code": "OUTLET", "item_name": "콘센트", "x": 200.0, "y": 300.0, "unit": "EA"},
-                            {"id": "p1_ot_2", "item_code": "OUTLET", "item_name": "콘센트", "x": 500.0, "y": 300.0, "unit": "EA"},
+                            {"id": "p1_ot_1", "item_code": "OUTLET", "item_name": "콘센트", "x": 100.0, "y": 150.0, "unit": "EA"},
+                            {"id": "p1_ot_2", "item_code": "OUTLET", "item_name": "콘센트", "x": 400.0, "y": 500.0, "unit": "EA"},
                         ],
                     },
                 ],
