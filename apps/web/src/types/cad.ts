@@ -395,4 +395,128 @@ export interface DemoSeedResponse {
   note?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Issue #35: Scope & Revision, Project Takeoff, and Revision Diff
+// ---------------------------------------------------------------------------
+export type SheetRole = "INSTALLATION" | "REFERENCE" | "DETAIL" | "LEGEND" | "UNKNOWN";
+
+export interface DrawingScope {
+  drawing_id: string;
+  project_id: string;
+  sheet_key: string;
+  floor: string;
+  zone?: string | null;
+  discipline: string;
+  revision: string;
+  sheet_role: SheetRole;
+  active_for_takeoff: boolean;
+  is_latest: boolean;
+  description: string;
+  updated_at: string;
+}
+
+export interface DrawingScopeUpdate {
+  sheet_key?: string;
+  floor?: string;
+  zone?: string | null;
+  discipline?: string;
+  revision?: string;
+  sheet_role?: SheetRole;
+  active_for_takeoff?: boolean;
+  description?: string;
+}
+
+export interface ProjectTakeoffSummaryRow {
+  item_code: string;
+  item_name: string;
+  specification: string;
+  unit: string;
+  total_quantity: number;
+  active_drawings_count: number;
+  is_provisional: boolean;
+  review_status: string;
+  quantity_method: string;
+  notes: string;
+}
+
+export interface DrawingTakeoffBreakdownItem {
+  drawing_id: string;
+  filename: string;
+  sheet_key: string;
+  floor: string;
+  discipline: string;
+  revision: string;
+  sheet_role: SheetRole;
+  active_for_takeoff: boolean;
+  items: TakeoffSummaryRow[];
+  unresolved_count: number;
+  is_provisional: boolean;
+}
+
+export interface ProjectTakeoffResult {
+  project_id: string;
+  project_name: string;
+  total_active_drawings: number;
+  total_inactive_drawings: number;
+  summary: ProjectTakeoffSummaryRow[];
+  drawings_breakdown: DrawingTakeoffBreakdownItem[];
+  drawings_scope: DrawingScope[];
+  scope_warnings: string[];
+  unresolved_count: number;
+  is_provisional: boolean;
+  exported_at: string;
+}
+
+export interface RevisionItemDelta {
+  item_code: string;
+  item_name: string;
+  specification: string;
+  unit: string;
+  base_quantity: number;
+  compare_quantity: number;
+  delta: number;
+  change_type: "INCREASED" | "DECREASED" | "UNCHANGED" | "ADDED" | "REMOVED";
+  notes: string;
+}
+
+export interface RevisionObjectDelta {
+  object_id: string;
+  item_code: string;
+  x: number;
+  y: number;
+  layer: string;
+  match_status: "MATCHED" | "PROPOSED_MATCH" | "ADDED" | "REMOVED";
+  confidence: number;
+  notes: string;
+}
+
+export interface RevisionComparisonResult {
+  project_id: string;
+  base_drawing: {
+    drawing_id: string;
+    drawing_name: string;
+    revision: string;
+    sheet_key: string;
+    floor: string;
+    discipline: string;
+    total_quantity: number;
+  };
+  compare_drawing: {
+    drawing_id: string;
+    drawing_name: string;
+    revision: string;
+    sheet_key: string;
+    floor: string;
+    discipline: string;
+    total_quantity: number;
+  };
+  items_delta: RevisionItemDelta[];
+  object_deltas: RevisionObjectDelta[];
+  total_base_qty: number;
+  total_compare_qty: number;
+  total_delta: number;
+  notes: string;
+}
+
+
 

@@ -23,6 +23,7 @@ import { ReviewDrawer } from "@/components/ReviewDrawer";
 import { WarningBanner } from "@/components/WarningBanner";
 import { ManualAddModal } from "@/components/ManualAddModal";
 import { CandidateReviewTable } from "@/components/CandidateReviewTable";
+import { ProjectOverview } from "@/components/ProjectOverview";
 import {
   Upload,
   Layers,
@@ -40,6 +41,7 @@ import {
   Play,
   Crop,
   CheckCircle2,
+  Building,
 } from "lucide-react";
 
 export default function WorkspacePage() {
@@ -51,6 +53,7 @@ export default function WorkspacePage() {
   const [takeoff, setTakeoff] = useState<TakeoffResult | null>(null);
 
   // UI state
+  const [viewMode, setViewMode] = useState<"project" | "drawing">("drawing");
   const [activeRightTab, setActiveRightTab] = useState<"takeoff" | "candidates" | "mapping" | "layers">("takeoff");
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [highlightedItemCode, setHighlightedItemCode] = useState<string | null>(null);
@@ -552,6 +555,33 @@ export default function WorkspacePage() {
     }
   };
 
+  // Multi-Drawing Demo Seed (Issue #35)
+  const handleSeedMultiDrawingDemo = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const res = await api.seedMultiDrawingDemo(true);
+      const pList = await api.listProjects();
+      setProjects(pList);
+      const demoProj = pList.find((p) => p.id === res.project_id) || {
+        id: res.project_id,
+        name: res.project_name,
+        description: "다중 도면 리비전 통합 프로젝트",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        drawing_count: res.drawings.length,
+      };
+      setCurrentProject(demoProj);
+      await refreshDrawings(demoProj.id, res.drawings[0]?.drawing_id);
+      setViewMode("project");
+    } catch (err: unknown) {
+      console.error("Failed to seed multi-drawing demo", err);
+      setErrorMessage("다중 도면 데모 시딩 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Reload mappings after template application
   const handleReloadMappings = async () => {
     if (!currentProject || !currentDrawing) return;
@@ -631,8 +661,39 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        {/* Center / Drawing Info & Reopen Selector */}
+        {/* Center / View Mode Switcher & Drawing Info */}
         <div className="flex items-center gap-3">
+          {currentProject && (
+            <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 shrink-0">
+              <button
+                type="button"
+                data-testid="btn-view-project"
+                onClick={() => setViewMode("project")}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap ${
+                  viewMode === "project"
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Building size={13} />
+                <span>프로젝트 전체</span>
+              </button>
+              <button
+                type="button"
+                data-testid="btn-view-drawing"
+                onClick={() => setViewMode("drawing")}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap ${
+                  viewMode === "drawing"
+                    ? "bg-sky-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Layers size={13} />
+                <span>도면 상세</span>
+              </button>
+            </div>
+          )}
+
           {drawings.length > 0 && (
             <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 text-xs">
               <FileText size={14} className="text-sky-400 shrink-0" />
@@ -642,6 +703,7 @@ export default function WorkspacePage() {
                 onChange={(e) => {
                   if (e.target.value && currentProject) {
                     loadDrawing(currentProject.id, e.target.value);
+                    setViewMode("drawing");
                   }
                 }}
                 className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer max-w-[200px] truncate"
@@ -655,7 +717,7 @@ export default function WorkspacePage() {
             </div>
           )}
 
-          {currentDrawing && (
+          {currentDrawing && viewMode === "drawing" && (
             <div className="hidden lg:flex items-center gap-3 text-xs font-mono text-slate-300 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
               <span className={currentDrawing.source_type === "PDF" || currentDrawing.source_type === "IMAGE" ? "text-amber-400 font-semibold" : "text-sky-400 font-semibold"}>
                 {currentDrawing.source.filename}
@@ -700,7 +762,7 @@ export default function WorkspacePage() {
 
         {/* Actions */}
         <div className="flex items-center gap-2">
-          {currentDrawing && (
+          {currentDrawing && viewMode === "drawing" && (
             <>
               <button
                 onClick={handleRunDetection}
@@ -751,6 +813,17 @@ export default function WorkspacePage() {
           />
 
           <button
+            onClick={handleSeedMultiDrawingDemo}
+            disabled={isLoading}
+            data-testid="btn-multi-drawing-demo"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/20 transition"
+            title="Issue #35 다중 도면(1F REV0/REV1, 2F, 1F단선도) 리비전 데모 로드"
+          >
+            <Sparkles size={13} />
+            <span>다중 도면 데모 (Issue #35)</span>
+          </button>
+
+          <button
             onClick={handleSeedDemo}
             disabled={isLoading}
             data-testid="btn-live-demo"
@@ -773,7 +846,7 @@ export default function WorkspacePage() {
       </header>
 
       {/* PDF Mode Notice Banner & Page Navigation (PR B) */}
-      {currentDrawing?.source_type === "PDF" && (
+      {viewMode === "drawing" && currentDrawing?.source_type === "PDF" && (
         <div className="bg-amber-950/70 border-b border-amber-800/60 px-4 py-2 text-xs text-amber-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded text-[10px] font-mono font-semibold">
@@ -845,7 +918,7 @@ export default function WorkspacePage() {
       )}
 
       {/* 2D Image Mode Notice Banner (FR-015/016 / Issue #29) */}
-      {currentDrawing?.source_type === "IMAGE" && (
+      {viewMode === "drawing" && currentDrawing?.source_type === "IMAGE" && (
         <div className="bg-sky-950/70 border-b border-sky-800/60 px-4 py-2 text-xs text-sky-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded text-[10px] font-mono font-semibold">
@@ -859,7 +932,7 @@ export default function WorkspacePage() {
       )}
 
       {/* Drawing Warnings Bar */}
-      {currentDrawing && <WarningBanner warnings={currentDrawing.warnings} />}
+      {viewMode === "drawing" && currentDrawing && <WarningBanner warnings={currentDrawing.warnings} />}
 
       {/* Global Error Banner */}
       {errorMessage && (
@@ -898,7 +971,20 @@ export default function WorkspacePage() {
 
       {/* Main Workspace Body */}
       <div className="flex-1 flex overflow-hidden relative">
-        {currentDrawing ? (
+        {viewMode === "project" && currentProject ? (
+          <div className="flex-1 overflow-hidden">
+            <ProjectOverview
+              currentProject={currentProject}
+              onOpenDrawing={(drawingId) => {
+                loadDrawing(currentProject.id, drawingId);
+                setViewMode("drawing");
+              }}
+              onRefreshProject={() => {
+                refreshDrawings(currentProject.id);
+              }}
+            />
+          </div>
+        ) : currentDrawing ? (
           <>
             {/* Left / Center: Interactive CAD 2D Viewer */}
             <div className="flex-1 relative h-full">
@@ -1482,6 +1568,29 @@ export default function WorkspacePage() {
                 <Upload size={16} />
                 도면 파일 선택 (.dxf)
               </button>
+
+              <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleSeedMultiDrawingDemo}
+                  disabled={isLoading}
+                  className="flex-1 py-2 bg-indigo-600/90 hover:bg-indigo-600 text-white rounded-lg text-xs font-semibold shadow transition flex items-center justify-center gap-1.5"
+                  title="다중 도면 리비전 통합 데모 (Issue #35)"
+                >
+                  <Sparkles size={13} />
+                  다중 도면 데모
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSeedDemo}
+                  disabled={isLoading}
+                  className="flex-1 py-2 bg-emerald-600/90 hover:bg-emerald-600 text-white rounded-lg text-xs font-semibold shadow transition flex items-center justify-center gap-1.5"
+                  title="실전 종합 데모 (CAD·PDF·이미지)"
+                >
+                  <Play size={13} />
+                  종합 실전 데모
+                </button>
+              </div>
             </div>
           </div>
         )}

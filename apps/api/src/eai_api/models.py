@@ -306,3 +306,139 @@ class SymbolSearchResponse(BaseModel):
     message: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Scope & Revision Management (Issue #35 Workstream A)
+# ---------------------------------------------------------------------------
+class SheetRole(StrEnum):
+    INSTALLATION = "INSTALLATION"  # 시공/배치도 (기본 산출 대상)
+    REFERENCE = "REFERENCE"        # 참고도/간선계통도 (산출 제외)
+    DETAIL = "DETAIL"              # 상세도 (산출 제외)
+    LEGEND = "LEGEND"              # 범례표 (산출 제외)
+    UNKNOWN = "UNKNOWN"            # 미지정
+
+
+class DrawingScope(BaseModel):
+    """Scope, Floor, Discipline, and Revision metadata for a drawing."""
+    model_config = ConfigDict(extra="forbid")
+    drawing_id: str
+    project_id: str
+    sheet_key: str  # Logical drawing group key, e.g. "1F_LIGHT"
+    floor: str = "1F"  # "1F", "2F", "B1", "ROOF", "ALL"
+    zone: str | None = None
+    discipline: str = "ELEC_LIGHT"  # "ELEC_LIGHT", "ELEC_POWER", "ELEC_COMM", "ELEC_FIRE"
+    revision: str = "REV0"
+    sheet_role: SheetRole = SheetRole.INSTALLATION
+    active_for_takeoff: bool = True
+    is_latest: bool = True
+    description: str = ""
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class DrawingScopeUpdate(BaseModel):
+    """Request payload to update a drawing's scope metadata."""
+    model_config = ConfigDict(extra="forbid")
+    sheet_key: str | None = None
+    floor: str | None = None
+    zone: str | None = None
+    discipline: str | None = None
+    revision: str | None = None
+    sheet_role: SheetRole | None = None
+    active_for_takeoff: bool | None = None
+    description: str | None = None
+
+
+class ActivateRevisionRequest(BaseModel):
+    """Request payload to set the active revision for a logical drawing group."""
+    model_config = ConfigDict(extra="forbid")
+    active: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Project Consolidated Takeoff (Issue #35 Workstream B)
+# ---------------------------------------------------------------------------
+class ProjectTakeoffSummaryRow(BaseModel):
+    """Consolidated takeoff row across active drawings in a project."""
+    item_code: str
+    item_name: str
+    specification: str
+    unit: str  # Strictly separated (EA, m, m² never combined)
+    total_quantity: int
+    active_drawings_count: int
+    is_provisional: bool = False
+    review_status: ReviewStatus = ReviewStatus.UNREVIEWED
+    quantity_method: QuantityMethod = QuantityMethod.CAD_BLOCK
+    notes: str = ""
+
+
+class DrawingTakeoffBreakdownItem(BaseModel):
+    """Breakdown of an individual active drawing's contribution to project takeoff."""
+    drawing_id: str
+    filename: str
+    sheet_key: str
+    floor: str
+    discipline: str
+    revision: str
+    sheet_role: SheetRole
+    active_for_takeoff: bool
+    items: list[TakeoffSummaryRow]
+    unresolved_count: int = 0
+    is_provisional: bool = False
+
+
+class ProjectTakeoffResult(BaseModel):
+    """Full project-level consolidated takeoff result."""
+    project_id: str
+    project_name: str
+    total_active_drawings: int
+    total_inactive_drawings: int
+    summary: list[ProjectTakeoffSummaryRow]
+    drawings_breakdown: list[DrawingTakeoffBreakdownItem]
+    drawings_scope: list[DrawingScope]
+    scope_warnings: list[str]
+    unresolved_count: int = 0
+    is_provisional: bool = False
+    exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# ---------------------------------------------------------------------------
+# Revision Comparison / Diff (Issue #35 Workstream C)
+# ---------------------------------------------------------------------------
+class RevisionItemDelta(BaseModel):
+    """Quantity delta between two revisions for a single equipment item."""
+    item_code: str
+    item_name: str
+    specification: str
+    unit: str
+    base_quantity: int
+    compare_quantity: int
+    delta: int  # compare_quantity - base_quantity
+    change_type: str  # "INCREASED", "DECREASED", "UNCHANGED", "ADDED", "REMOVED"
+    notes: str = ""
+
+
+class RevisionObjectDelta(BaseModel):
+    """CAD entity or detected symbol correspondence between two revisions."""
+    object_id: str
+    item_code: str
+    x: float
+    y: float
+    layer: str
+    match_status: str  # "MATCHED", "PROPOSED_MATCH", "ADDED", "REMOVED"
+    confidence: float = 1.0
+    notes: str = ""
+
+
+class RevisionComparisonResult(BaseModel):
+    """Pragmatic diff comparison between a base drawing and a compare drawing."""
+    project_id: str
+    base_drawing: dict[str, Any]
+    compare_drawing: dict[str, Any]
+    items_delta: list[RevisionItemDelta]
+    object_deltas: list[RevisionObjectDelta]
+    total_base_qty: int
+    total_compare_qty: int
+    total_delta: int
+    notes: str = ""
+
+
+

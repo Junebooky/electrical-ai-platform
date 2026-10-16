@@ -73,6 +73,70 @@ flowchart LR
 
 ---
 
+## 3.1 다중 도면 스코프 및 리비전 관리 시연 (Issue #35 PO 3분 라이브 데모)
+
+본 기능은 대형 전기공사 프로젝트의 다수 층/구역 도면을 취합 집계하고, 설계변경(REV) 시 구버전 도면의 중복 산출을 원천 방지하며, 변경 전/후 물량 증감(Delta) 및 4개 시트 엑셀 내보내기를 검증하기 위한 핵심 에픽입니다.
+
+```mermaid
+flowchart TD
+    A["[다중 도면 데모 (Issue #35)] 클릭"] --> B["초기 활성: 1F REV0 (6) + 2F (8) = 14 LIGHT"]
+    B --> C["참조도면 (1F단선도, 6개) 산출 제외 확인"]
+    C --> D["[도면 등록부] 1F REV1(10) 활성 교체"]
+    D --> E["프로젝트 전체 집계 자동 재계산: 18 LIGHT (+4 EA)"]
+    E --> F["[설계변경 비교] 1F REV0 vs REV1 증감 및 객체 매칭 확인"]
+    F --> G["[4시트 엑셀 다운로드] 요약/내역/증감/근거 내보내기"]
+```
+
+### [단계별 시연 절차]
+
+1. **원클릭 데모 로드:**
+   - 상단 헤더 우측의 **`[다중 도면 데모 (Issue #35)]`** 버튼을 클릭합니다.
+   - 단 1초 만에 4종의 정밀 DXF 도면이 자동 파싱·적산되고, 프로젝트 모드 화면으로 전환됩니다:
+     - `floor1_rev0.dxf`: 1층 전등 평면도 REV0 (`sheet_key: 1F_LIGHT`, 활성, LIGHT 6개)
+     - `floor2_rev0.dxf`: 2층 전등 평면도 REV0 (`sheet_key: 2F_LIGHT`, 활성, LIGHT 8개)
+     - `floor1_rev1.dxf`: 1층 전등 평면도 REV1 (`sheet_key: 1F_LIGHT`, 비활성, LIGHT 10개)
+     - `floor1_ref_singleline.dxf`: 1층 단선계통도 (`sheet_role: REFERENCE`, 비활성, LIGHT 6개)
+2. **초기 집계값 14 EA 확인:**
+   - 상단 KPI 카드: **조명기구 (LIGHT) 총 수량: 14 EA (정답: 14)**
+   - 통합 집계표: `LIGHT` 14 EA, `OUTLET` 8 EA, `SWITCH` 6 EA
+   - 도면별 기여 내역: `2F_LIGHT` (8 EA) + `1F_LIGHT REV0` (6 EA) = 14 EA
+   - ⚠️ **참조도면 검증:** `floor1_ref_singleline.dxf`는 6개의 조명 블록을 포함하지만 `sheet_role: REFERENCE` 정책에 따라 물량 산출에서 완벽히 제외되어 중복 집계가 발생하지 않습니다.
+   ![초기 다중 도면 14 EA 집계](screenshots/01_project_overview_initial_14_ea.png)
+
+3. **리비전 교체 (14 EA $\rightarrow$ 18 EA):**
+   - **`[도면 등록부 및 REV 관리]`** 탭을 클릭합니다.
+   - 등록된 4개 도면 목록 중 `floor1_rev1.dxf (REV1)` 행을 확인합니다.
+   - 우측의 **`[활성 REV로 교체]`** 버튼을 클릭합니다.
+   - **`[프로젝트 총괄 집계표]`** 탭으로 복귀하여 수량을 확인합니다.
+   - **검증:** 동일 `sheet_key`(`1F_LIGHT`)의 REV0(6개)가 즉시 비활성화되고 REV1(10개)가 활성화되어 총 조명 수량이 **14 EA $\rightarrow$ 18 EA (+4 EA)**로 정확하게 갱신됩니다.
+   ![리비전 교체 후 18 EA 집계](screenshots/02_project_overview_rev1_18_ea.png)
+
+4. **설계변경 물량 증감 (Revision Pragmatic Diff) 분석:**
+   - **`[설계변경 비교 (Revision Diff)]`** 탭을 클릭합니다.
+   - 기준 REV: `1F REV0` vs 비교 REV: `1F REV1` 선택 상태를 확인합니다.
+   - **품목별 증감 분석:**
+     - 기준 수량 13 EA $\rightarrow$ 변경 수량 17 EA (총 증감 **+4 EA**)
+     - `LIGHT`: 6 EA $\rightarrow$ 10 EA (**+4 EA**, 상태: `수량 증가`)
+     - `OUTLET`, `PANEL`, `SWITCH`: 증감 0 (상태: `변경 없음`)
+   - **객체 단위 정밀 Correspondence 추적:**
+     - 동일 위치에 배치된 6개 조명 기구는 `일치 (MATCHED)`로 자동 판정.
+     - REV1에서 새롭게 추가된 4개 조명 기구는 `신규 추가 (ADDED - 추정/검토 필요)` 뱃지로 표시되어 현장 시공 및 설계자 검토 대상임을 명확히 안내합니다.
+   ![설계변경 증감 및 객체 매칭 분석](screenshots/03_revision_diff_tab.png)
+
+5. **4시트 엑셀 내보내기 (XLSX):**
+   - 우측 상단 **`[4시트 엑셀 다운로드 (XLSX)]`** 버튼을 클릭합니다.
+   - 다운로드된 Excel 파일의 4개 시트를 확인합니다:
+     - `Project Summary`: 프로젝트 전체 품목별 총 수량 및 검수 상태
+     - `Drawing Breakdown`: 도면별 층/구역/리비전별 세부 기여 물량 행렬
+     - `Revision Delta`: 리비전 간 품목별 증감량(Delta) 및 변경 사유
+     - `Evidence`: 전체 산출 기구의 WCS 좌표(X, Y), 블록명, 레이어 원문 근거
+     - 🛡️ **보안 검증:** `=`, `+`, `-`, `@` 기호로 시작하는 모든 셀에 `'` 접두사가 부여되어 엑셀 수식 주입(Formula Injection) 공격을 원천 차단합니다.
+6. **단일 도면 상세 보기 복귀:**
+   - 상단 헤더의 **`[도면 상세]`** 버튼을 클릭하면 개별 도면의 2D 인터랙티브 CAD 뷰어로 매끄럽게 전환됩니다.
+   ![단일 도면 상세 CAD 뷰어](screenshots/04_cad_viewer_drawing_mode.png)
+
+---
+
 ## 4. 정규 8단계 시연 시나리오 및 클릭 가이드
 
 ```mermaid

@@ -15,6 +15,10 @@ import {
   DemoSeedResponse,
   SymbolSearchRequest,
   SymbolSearchResponse,
+  DrawingScope,
+  DrawingScopeUpdate,
+  ProjectTakeoffResult,
+  RevisionComparisonResult,
 } from "@/types/cad";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -309,5 +313,87 @@ export const api = {
     );
     return handleResponse(res);
   },
+
+  // ---------------------------------------------------------------------------
+  // Issue #35: Multi-Drawing Scope & Revision, Project Takeoff & Diff
+  // ---------------------------------------------------------------------------
+  getProjectScopes: async (projectId: string): Promise<DrawingScope[]> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/scopes`);
+    return handleResponse(res);
+  },
+
+  getDrawingScope: async (projectId: string, drawingId: string): Promise<DrawingScope> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/scope`);
+    return handleResponse(res);
+  },
+
+  updateDrawingScope: async (
+    projectId: string,
+    drawingId: string,
+    payload: DrawingScopeUpdate
+  ): Promise<DrawingScope> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/scope`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
+    return handleResponse(res);
+  },
+
+  activateRevision: async (
+    projectId: string,
+    drawingId: string,
+    active = true
+  ): Promise<DrawingScope> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/activate-revision`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active }),
+      }
+    );
+    return handleResponse(res);
+  },
+
+  getProjectTakeoff: async (projectId: string): Promise<ProjectTakeoffResult> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/takeoff`);
+    return handleResponse(res);
+  },
+
+  compareRevisions: async (
+    projectId: string,
+    baseDrawingId: string,
+    compareDrawingId: string
+  ): Promise<RevisionComparisonResult> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/revisions/compare?base_drawing_id=${encodeURIComponent(
+        baseDrawingId
+      )}&compare_drawing_id=${encodeURIComponent(compareDrawingId)}`
+    );
+    return handleResponse(res);
+  },
+
+  seedMultiDrawingDemo: async (reset = true): Promise<DemoSeedResponse> => {
+    const res = await fetch(`${API_BASE}/api/demo/seed-multi-drawing?reset=${reset ? "true" : "false"}`, {
+      method: "POST",
+    });
+    return handleResponse(res);
+  },
+
+  getProjectExportXlsxUrl: (projectId: string): string => {
+    return `${API_BASE}/api/projects/${projectId}/export/xlsx`;
+  },
+
+  getProjectExportCsvUrl: (
+    projectId: string,
+    type: "summary" | "breakdown" | "delta" = "summary"
+  ): string => {
+    return `${API_BASE}/api/projects/${projectId}/export/csv?type=${type}`;
+  },
 };
+
 

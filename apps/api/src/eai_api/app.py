@@ -17,9 +17,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from .detector import detect_candidates
-from .exporter import export_csv_evidence, export_csv_summary, export_xlsx
+from .exporter import (
+    export_csv_evidence,
+    export_csv_summary,
+    export_project_csv_breakdown,
+    export_project_csv_delta,
+    export_project_csv_summary,
+    export_project_xlsx,
+    export_xlsx,
+)
 from .image_parser import build_image_drawing, inspect_image
 from .models import (
+    ActivateRevisionRequest,
     ApplyTemplateRequest,
     CandidateBulkReviewRequest,
     CandidatesResponse,
@@ -27,6 +36,8 @@ from .models import (
     CandidateStatus,
     DemoDrawingItem,
     DemoSeedResponse,
+    DrawingScope,
+    DrawingScopeUpdate,
     DrawingSummary,
     EvidenceReviewItem,
     InclusionStatus,
@@ -37,6 +48,9 @@ from .models import (
     MappingTemplateListResponse,
     ProjectCreate,
     ProjectMetadata,
+    ProjectTakeoffResult,
+    RevisionComparisonResult,
+    SheetRole,
     SymbolCandidate,
     SymbolSearchRequest,
     SymbolSearchResponse,
@@ -544,12 +558,21 @@ def get_fixture_path(subpath: str) -> Path:
 
 
 @app.post("/api/demo/seed", response_model=DemoSeedResponse)
-def seed_demo_project(reset: bool = Query(False, description="기존 데모 데이터 초기화 여부")) -> DemoSeedResponse:
-    """Seed a comprehensive live demo project with DXF, PDF, and Image drawings.
+def seed_demo_project(
+    reset: bool = Query(False, description="기존 데모 데이터 초기화 여부"),
+    type: Literal["format", "multi_drawing"] = Query(
+        "format", description="데모 시나리오 (format: 3개 포맷, multi_drawing: 다중 도면 및 REV)"
+    ),
+) -> DemoSeedResponse:
+    """Seed live demo project.
 
-    Idempotent (A01 P1-DEMO-RESEED fix): if the demo project already exists and reset=False,
-    existing drawings, candidates, and user review statuses (ACCEPTED/REJECTED) are completely preserved.
+    Supports:
+    - type="format": DXF, PDF, Image 3 formats with visual search (Issue #23/#29)
+    - type="multi_drawing": Multi-drawing scope, 1F REV0 (6) + 2F (8) = 14 -> REV1 (10) = 18 (+4) (Issue #35)
     """
+    if type == "multi_drawing":
+        return seed_multi_drawing_demo_project(reset=reset)
+
     demo_name = "EAI 실전 전기 적산 데모 (Issue #23)"
     existing_projects = storage.list_projects()
     proj = next((p for p in existing_projects if p.name == demo_name), None)
@@ -1226,3 +1249,335 @@ def export_excel(
             "X-Takeoff-Unresolved-Count": str(result.unresolved_count),
         },
     )
+
+
+# -------------------------------------------------- Scope & Revision Registry (Issue #35)
+@app.get("/api/projects/{project_id}/scopes", response_model=list[DrawingScope])
+def get_project_drawing_scopes(project_id: str) -> list[DrawingScope]:
+    proj = storage.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    return storage.list_drawing_scopes(project_id)
+
+
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/scope", response_model=DrawingScope)
+def get_drawing_scope(project_id: str, drawing_id: str) -> DrawingScope:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    return storage.get_drawing_scope(project_id, drawing_id)
+
+
+@app.put("/api/projects/{project_id}/drawings/{drawing_id}/scope", response_model=DrawingScope)
+def update_drawing_scope(
+    project_id: str,
+    drawing_id: str,
+    req: DrawingScopeUpdate,
+) -> DrawingScope:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    scope = storage.get_drawing_scope(project_id, drawing_id)
+    if req.sheet_key is not None:
+        scope.sheet_key = req.sheet_key
+    if req.floor is not None:
+        scope.floor = req.floor
+    if req.zone is not None:
+        scope.zone = req.zone
+    if req.discipline is not None:
+        scope.discipline = req.discipline
+    if req.revision is not None:
+        scope.revision = req.revision
+    if req.sheet_role is not None:
+        scope.sheet_role = req.sheet_role
+        if req.sheet_role != SheetRole.INSTALLATION and req.active_for_takeoff is None:
+            scope.active_for_takeoff = False
+    if req.active_for_takeoff is not None:
+        scope.active_for_takeoff = req.active_for_takeoff
+    if req.description is not None:
+        scope.description = req.description
+
+    scope.updated_at = datetime.now(UTC)
+    storage.save_drawing_scope(project_id, drawing_id, scope)
+    return scope
+
+
+@app.post(
+    "/api/projects/{project_id}/drawings/{drawing_id}/activate-revision",
+    response_model=DrawingScope,
+)
+def activate_revision(
+    project_id: str,
+    drawing_id: str,
+    req: ActivateRevisionRequest | None = None,
+) -> DrawingScope:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    active = req.active if req else True
+    if active:
+        target_scope, _ = storage.activate_drawing_revision(project_id, drawing_id)
+        return target_scope
+    else:
+        scope = storage.get_drawing_scope(project_id, drawing_id)
+        scope.active_for_takeoff = False
+        scope.updated_at = datetime.now(UTC)
+        storage.save_drawing_scope(project_id, drawing_id, scope)
+        return scope
+
+
+# -------------------------------------------------- Project Takeoff (Issue #35)
+@app.get("/api/projects/{project_id}/takeoff", response_model=ProjectTakeoffResult)
+def get_project_consolidated_takeoff(project_id: str) -> ProjectTakeoffResult:
+    proj = storage.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+    return storage.calculate_project_takeoff(project_id)
+
+
+# -------------------------------------------------- Revision Comparison (Issue #35)
+@app.get("/api/projects/{project_id}/revisions/compare", response_model=RevisionComparisonResult)
+def compare_drawing_revisions(
+    project_id: str,
+    base_drawing_id: str = Query(..., description="기준 도면 ID (이전 REV)"),
+    compare_drawing_id: str = Query(..., description="비교 도면 ID (신규/변경 REV)"),
+) -> RevisionComparisonResult:
+    base_dwg = storage.get_drawing(project_id, base_drawing_id)
+    if not base_dwg:
+        raise HTTPException(status_code=404, detail="기준 도면을 찾을 수 없습니다.")
+    comp_dwg = storage.get_drawing(project_id, compare_drawing_id)
+    if not comp_dwg:
+        raise HTTPException(status_code=404, detail="비교 도면을 찾을 수 없습니다.")
+
+    return storage.compare_revisions(project_id, base_drawing_id, compare_drawing_id)
+
+
+# -------------------------------------------------- Project Export (Issue #35)
+@app.get("/api/projects/{project_id}/export/xlsx")
+def export_project_excel(project_id: str) -> Response:
+    proj = storage.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+
+    p_result = storage.calculate_project_takeoff(project_id)
+
+    scopes = storage.list_drawing_scopes(project_id)
+    groups: dict[str, list[DrawingScope]] = {}
+    for s in scopes:
+        groups.setdefault(s.sheet_key, []).append(s)
+
+    deltas: list[RevisionComparisonResult] = []
+    for _sk, dwg_list in groups.items():
+        if len(dwg_list) >= 2:
+            dwg_list_sorted = sorted(dwg_list, key=lambda x: x.revision)
+            for i in range(len(dwg_list_sorted) - 1):
+                try:
+                    delta = storage.compare_revisions(
+                        project_id, dwg_list_sorted[i].drawing_id, dwg_list_sorted[i + 1].drawing_id
+                    )
+                    deltas.append(delta)
+                except Exception:
+                    pass
+
+    active_takeoffs: list[TakeoffResult] = []
+    for s in p_result.drawings_scope:
+        if s.active_for_takeoff:
+            t_res = storage.calculate_takeoff(project_id, s.drawing_id)
+            if t_res:
+                active_takeoffs.append(t_res)
+
+    data = export_project_xlsx(p_result, revision_deltas=deltas, active_takeoffs=active_takeoffs)
+    filename = f"{proj.name}_project_takeoff_4sheets.xlsx"
+    quoted = urllib.parse.quote(filename)
+    comp_header = "provisional" if p_result.is_provisional else "confirmed"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "X-Takeoff-Completeness": comp_header,
+            "X-Takeoff-Unresolved-Count": str(p_result.unresolved_count),
+        },
+    )
+
+
+@app.get("/api/projects/{project_id}/export/csv")
+def export_project_csv_endpoint(
+    project_id: str,
+    type: Literal["summary", "breakdown", "delta"] = "summary",
+) -> Response:
+    proj = storage.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="프로젝트를 찾을 수 없습니다.")
+
+    p_result = storage.calculate_project_takeoff(project_id)
+    if type == "summary":
+        data = export_project_csv_summary(p_result)
+        filename = f"{proj.name}_project_summary.csv"
+    elif type == "breakdown":
+        data = export_project_csv_breakdown(p_result)
+        filename = f"{proj.name}_drawing_breakdown.csv"
+    else:
+        scopes = storage.list_drawing_scopes(project_id)
+        groups: dict[str, list[DrawingScope]] = {}
+        for s in scopes:
+            groups.setdefault(s.sheet_key, []).append(s)
+
+        deltas: list[RevisionComparisonResult] = []
+        for _sk, dwg_list in groups.items():
+            if len(dwg_list) >= 2:
+                dwg_list_sorted = sorted(dwg_list, key=lambda x: x.revision)
+                for i in range(len(dwg_list_sorted) - 1):
+                    try:
+                        delta = storage.compare_revisions(
+                            project_id, dwg_list_sorted[i].drawing_id, dwg_list_sorted[i + 1].drawing_id
+                        )
+                        deltas.append(delta)
+                    except Exception:
+                        pass
+        data = export_project_csv_delta(deltas)
+        filename = f"{proj.name}_revision_delta.csv"
+
+    quoted = urllib.parse.quote(filename)
+    comp_header = "provisional" if p_result.is_provisional else "confirmed"
+    return Response(
+        content=data,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "X-Takeoff-Completeness": comp_header,
+            "X-Takeoff-Unresolved-Count": str(p_result.unresolved_count),
+        },
+    )
+
+
+# -------------------------------------------------- Multi-Drawing Demo Seeding (Issue #35)
+@app.post("/api/demo/seed-multi-drawing", response_model=DemoSeedResponse)
+def seed_multi_drawing_demo_project(
+    reset: bool = Query(True, description="기존 프로젝트 데이터 재설정 여부"),
+) -> DemoSeedResponse:
+    """Seed multi-drawing project with 1F REV0 (6), 2F REV0 (8), 1F REV1 (10), 1F REF (6).
+
+    Target ground truth:
+    - Initial active: 1F REV0 (6) + 2F REV0 (8) = 14 LIGHT
+    - Switch 1F to REV1 (10): Total = 18 LIGHT (+4)
+    - 1F REF is reference role and inactive (6 excluded).
+    """
+    demo_name = "EAI 실전 다중 도면 및 설계변경 적산 데모 (Issue #35)"
+    existing_projects = storage.list_projects()
+    proj = next((p for p in existing_projects if p.name == demo_name), None)
+    if not proj:
+        proj_payload = ProjectCreate(
+            name=demo_name,
+            description="다중 도면 스코프·REV 교체(14→18/+4)·4시트 엑셀 내보내기 실전 시연 프로젝트",
+        )
+        proj = storage.create_project(proj_payload)
+    elif reset:
+        for d in storage.list_drawings(proj.id):
+            storage.delete_drawing(proj.id, d.id)
+
+    seeded_drawings: list[DemoDrawingItem] = []
+
+    # 1. 1F REV0
+    p1 = get_fixture_path("fixtures/dxf/project_demo/floor1_rev0.dxf")
+    raw1 = p1.read_bytes()
+    dwg1 = parse_dxf(raw1, filename=p1.name)
+    id1 = f"dwg_f1_r0_{proj.id[-6:]}"
+    dwg1.drawing_id = id1
+    storage.save_drawing(proj.id, dwg1, revision="REV0", raw_bytes=raw1, source_type="DXF")
+    storage.apply_mapping_template(proj.id, id1, "tpl_standard_elec")
+    scope1 = DrawingScope(
+        drawing_id=id1,
+        project_id=proj.id,
+        sheet_key="1F_LIGHT",
+        floor="1F",
+        discipline="ELEC_LIGHT",
+        revision="REV0",
+        sheet_role=SheetRole.INSTALLATION,
+        active_for_takeoff=True,
+        is_latest=False,
+        description="1층 전등설비 평면도 REV0",
+    )
+    storage.save_drawing_scope(proj.id, id1, scope1)
+    seeded_drawings.append(DemoDrawingItem(drawing_id=id1, filename=p1.name, source_type="DXF", objects_count=len(dwg1.objects), status="ready"))
+
+    # 2. 2F REV0
+    p2 = get_fixture_path("fixtures/dxf/project_demo/floor2_rev0.dxf")
+    raw2 = p2.read_bytes()
+    dwg2 = parse_dxf(raw2, filename=p2.name)
+    id2 = f"dwg_f2_r0_{proj.id[-6:]}"
+    dwg2.drawing_id = id2
+    storage.save_drawing(proj.id, dwg2, revision="REV0", raw_bytes=raw2, source_type="DXF")
+    storage.apply_mapping_template(proj.id, id2, "tpl_standard_elec")
+    scope2 = DrawingScope(
+        drawing_id=id2,
+        project_id=proj.id,
+        sheet_key="2F_LIGHT",
+        floor="2F",
+        discipline="ELEC_LIGHT",
+        revision="REV0",
+        sheet_role=SheetRole.INSTALLATION,
+        active_for_takeoff=True,
+        is_latest=True,
+        description="2층 전등설비 평면도 REV0",
+    )
+    storage.save_drawing_scope(proj.id, id2, scope2)
+    seeded_drawings.append(DemoDrawingItem(drawing_id=id2, filename=p2.name, source_type="DXF", objects_count=len(dwg2.objects), status="ready"))
+
+    # 3. 1F REV1 (Design Change: +4 LIGHTs)
+    p3 = get_fixture_path("fixtures/dxf/project_demo/floor1_rev1.dxf")
+    raw3 = p3.read_bytes()
+    dwg3 = parse_dxf(raw3, filename=p3.name)
+    id3 = f"dwg_f1_r1_{proj.id[-6:]}"
+    dwg3.drawing_id = id3
+    storage.save_drawing(proj.id, dwg3, revision="REV1", raw_bytes=raw3, source_type="DXF")
+    storage.apply_mapping_template(proj.id, id3, "tpl_standard_elec")
+    scope3 = DrawingScope(
+        drawing_id=id3,
+        project_id=proj.id,
+        sheet_key="1F_LIGHT",
+        floor="1F",
+        discipline="ELEC_LIGHT",
+        revision="REV1",
+        sheet_role=SheetRole.INSTALLATION,
+        active_for_takeoff=False,
+        is_latest=True,
+        description="1층 전등설비 설계변경 REV1 (+4구)",
+    )
+    storage.save_drawing_scope(proj.id, id3, scope3)
+    seeded_drawings.append(DemoDrawingItem(drawing_id=id3, filename=p3.name, source_type="DXF", objects_count=len(dwg3.objects), status="ready"))
+
+    # 4. 1F Reference Schematic (Reference role, inactive)
+    p4 = get_fixture_path("fixtures/dxf/project_demo/floor1_ref_singleline.dxf")
+    raw4 = p4.read_bytes()
+    dwg4 = parse_dxf(raw4, filename=p4.name)
+    id4 = f"dwg_f1_ref_{proj.id[-6:]}"
+    dwg4.drawing_id = id4
+    storage.save_drawing(proj.id, dwg4, revision="REV0", raw_bytes=raw4, source_type="DXF")
+    storage.apply_mapping_template(proj.id, id4, "tpl_standard_elec")
+    scope4 = DrawingScope(
+        drawing_id=id4,
+        project_id=proj.id,
+        sheet_key="1F_REF",
+        floor="1F",
+        discipline="ELEC_LIGHT",
+        revision="REV0",
+        sheet_role=SheetRole.REFERENCE,
+        active_for_takeoff=False,
+        is_latest=False,
+        description="1층 전등 간선계통도 (참조용, 산출 제외)",
+    )
+    storage.save_drawing_scope(proj.id, id4, scope4)
+    seeded_drawings.append(DemoDrawingItem(drawing_id=id4, filename=p4.name, source_type="DXF", objects_count=len(dwg4.objects), status="ready"))
+
+    return DemoSeedResponse(
+        status="seeded",
+        project_id=proj.id,
+        project_name=proj.name,
+        drawings=seeded_drawings,
+        applied_template="tpl_standard_elec",
+        note="다중 층(1F/2F), 설계변경 REV1, 참조도면 포함 실전 프로젝트 시드 완료 (14→18/+4 정답 검증 준비)",
+    )
+

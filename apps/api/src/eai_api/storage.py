@@ -6,6 +6,7 @@ import contextlib
 import json
 import math
 import os
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +17,9 @@ from cad_engine.takeoff import BlockMapping, Disposition, aggregate
 
 from .models import (
     CandidateStatus,
+    DrawingScope,
     DrawingSummary,
+    DrawingTakeoffBreakdownItem,
     EvidenceReviewItem,
     InclusionStatus,
     ItemMappingRule,
@@ -25,8 +28,14 @@ from .models import (
     MappingTemplateCreate,
     ProjectCreate,
     ProjectMetadata,
+    ProjectTakeoffResult,
+    ProjectTakeoffSummaryRow,
     QuantityMethod,
     ReviewStatus,
+    RevisionComparisonResult,
+    RevisionItemDelta,
+    RevisionObjectDelta,
+    SheetRole,
     SymbolCandidate,
     TakeoffEvidenceRow,
     TakeoffResult,
@@ -276,6 +285,13 @@ class Storage:
                 nd.dimensions = meta["dimensions"]
         return nd
 
+    def delete_drawing(self, project_id: str, drawing_id: str) -> bool:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        if d_dir.exists():
+            shutil.rmtree(d_dir, ignore_errors=True)
+            return True
+        return False
+
     def get_drawing_meta(self, project_id: str, drawing_id: str) -> dict[str, Any] | None:
         meta_file = self.projects_dir / project_id / "drawings" / drawing_id / "meta.json"
         if not meta_file.exists():
@@ -505,6 +521,367 @@ class Storage:
             reviews=reviews,
             manual_objects=manual_objects,
             candidates=candidates,
+        )
+
+    # -------------------------------------------------- Scope & Revision Registry
+    def get_drawing_scope(self, project_id: str, drawing_id: str) -> DrawingScope:
+        scope_file = self.projects_dir / project_id / "drawings" / drawing_id / "scope.json"
+        if scope_file.exists():
+            try:
+                data = json.loads(scope_file.read_text(encoding="utf-8"))
+                return DrawingScope.model_validate(data)
+            except Exception:
+                pass
+
+        # Graceful fallback: infer from meta.json without modifying it
+        meta = self.get_drawing_meta(project_id, drawing_id) or {}
+        raw_rev = meta.get("revision", "REV0")
+        filename = meta.get("filename", "")
+
+        fn_lower = filename.lower()
+        floor = "1F"
+        if "floor2" in fn_lower or "2f" in fn_lower or "2층" in fn_lower:
+            floor = "2F"
+        elif "floor3" in fn_lower or "3f" in fn_lower:
+            floor = "3F"
+        elif "b1" in fn_lower or "지하1층" in fn_lower:
+            floor = "B1"
+
+        discipline = "ELEC_LIGHT"
+        if "power" in fn_lower or "전열" in fn_lower:
+            discipline = "ELEC_POWER"
+        elif "comm" in fn_lower or "통신" in fn_lower:
+            discipline = "ELEC_COMM"
+        elif "fire" in fn_lower or "소방" in fn_lower:
+            discipline = "ELEC_FIRE"
+
+        role = SheetRole.INSTALLATION
+        active_for_takeoff = True
+        if "ref" in fn_lower or "singleline" in fn_lower or "계통도" in fn_lower:
+            role = SheetRole.REFERENCE
+            active_for_takeoff = False
+        elif "detail" in fn_lower or "상세" in fn_lower:
+            role = SheetRole.DETAIL
+            active_for_takeoff = False
+        elif "legend" in fn_lower or "범례" in fn_lower:
+            role = SheetRole.LEGEND
+            active_for_takeoff = False
+
+        sheet_key = f"{floor}_{discipline}"
+
+        return DrawingScope(
+            drawing_id=drawing_id,
+            project_id=project_id,
+            sheet_key=sheet_key,
+            floor=floor,
+            zone=None,
+            discipline=discipline,
+            revision=raw_rev,
+            sheet_role=role,
+            active_for_takeoff=active_for_takeoff,
+            is_latest=True,
+            description=filename,
+        )
+
+    def save_drawing_scope(
+        self, project_id: str, drawing_id: str, scope: DrawingScope
+    ) -> None:
+        scope_file = self.projects_dir / project_id / "drawings" / drawing_id / "scope.json"
+        self._save_json(scope_file, scope.model_dump(mode="json"))
+
+    def list_drawing_scopes(self, project_id: str) -> list[DrawingScope]:
+        drawings = self.list_drawings(project_id)
+        return [self.get_drawing_scope(project_id, d.id) for d in drawings]
+
+    def activate_drawing_revision(
+        self, project_id: str, target_drawing_id: str
+    ) -> tuple[DrawingScope, list[DrawingScope]]:
+        """Set target drawing active for takeoff, deactivating other revisions with the same sheet_key."""
+        target_scope = self.get_drawing_scope(project_id, target_drawing_id)
+        target_scope.active_for_takeoff = True
+        target_scope.updated_at = datetime.now(UTC)
+        self.save_drawing_scope(project_id, target_drawing_id, target_scope)
+
+        deactivated: list[DrawingScope] = []
+        all_scopes = self.list_drawing_scopes(project_id)
+        for s in all_scopes:
+            if s.drawing_id != target_drawing_id and s.sheet_key == target_scope.sheet_key and s.active_for_takeoff:
+                s.active_for_takeoff = False
+                s.updated_at = datetime.now(UTC)
+                self.save_drawing_scope(project_id, s.drawing_id, s)
+                deactivated.append(s)
+
+        return target_scope, deactivated
+
+    # ------------------------------------------------------------- Project Takeoff
+    def calculate_project_takeoff(self, project_id: str) -> ProjectTakeoffResult:
+        proj = self.get_project(project_id)
+        project_name = proj.name if proj else "프로젝트"
+
+        scopes = self.list_drawing_scopes(project_id)
+        active_scopes = [s for s in scopes if s.active_for_takeoff]
+        inactive_scopes = [s for s in scopes if not s.active_for_takeoff]
+
+        scope_warnings: list[str] = []
+        # Check for duplicate active scopes in installation role
+        active_sheet_keys: dict[str, list[str]] = {}
+        for s in active_scopes:
+            if s.sheet_role == SheetRole.INSTALLATION:
+                active_sheet_keys.setdefault(s.sheet_key, []).append(s.drawing_id)
+
+        for sk, dwg_ids in active_sheet_keys.items():
+            if len(dwg_ids) > 1:
+                scope_warnings.append(
+                    f"동일 도면 그룹 '{sk}'에 복수의 활성 도면({len(dwg_ids)}개)이 활성화되어 있습니다. "
+                    "중복 합산 방지를 위해 단일 활성 REV를 지정해 주세요."
+                )
+
+        drawings_breakdown: list[DrawingTakeoffBreakdownItem] = []
+        agg_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+        total_unresolved = 0
+        any_provisional = False
+
+        for s in active_scopes:
+            t_res = self.calculate_takeoff(project_id, s.drawing_id)
+            if not t_res:
+                continue
+
+            drawings_breakdown.append(
+                DrawingTakeoffBreakdownItem(
+                    drawing_id=s.drawing_id,
+                    filename=t_res.drawing_name,
+                    sheet_key=s.sheet_key,
+                    floor=s.floor,
+                    discipline=s.discipline,
+                    revision=s.revision,
+                    sheet_role=s.sheet_role,
+                    active_for_takeoff=s.active_for_takeoff,
+                    items=t_res.summary,
+                    unresolved_count=t_res.unresolved_count,
+                    is_provisional=t_res.is_provisional,
+                )
+            )
+
+            if t_res.is_provisional:
+                any_provisional = True
+            total_unresolved += t_res.unresolved_count
+
+            for row in t_res.summary:
+                # Key strictly separates item_code, unit, and specification
+                key = (row.item_code, row.unit, row.specification)
+                if key not in agg_map:
+                    agg_map[key] = {
+                        "item_code": row.item_code,
+                        "item_name": row.item_name,
+                        "specification": row.specification,
+                        "unit": row.unit,
+                        "total_quantity": 0,
+                        "contributing_drawings": set(),
+                        "is_provisional": False,
+                        "review_status": ReviewStatus.REVIEWED,
+                        "quantity_method": row.quantity_method,
+                    }
+                agg_map[key]["total_quantity"] += row.quantity
+                agg_map[key]["contributing_drawings"].add(s.drawing_id)
+                if row.is_provisional or row.review_status != ReviewStatus.REVIEWED:
+                    agg_map[key]["is_provisional"] = True
+                    agg_map[key]["review_status"] = ReviewStatus.UNREVIEWED
+
+        summary_rows: list[ProjectTakeoffSummaryRow] = []
+        for _key, d in sorted(agg_map.items(), key=lambda x: (x[0][0], x[0][1])):
+            summary_rows.append(
+                ProjectTakeoffSummaryRow(
+                    item_code=d["item_code"],
+                    item_name=d["item_name"],
+                    specification=d["specification"],
+                    unit=d["unit"],
+                    total_quantity=d["total_quantity"],
+                    active_drawings_count=len(d["contributing_drawings"]),
+                    is_provisional=d["is_provisional"],
+                    review_status=d["review_status"],
+                    quantity_method=d["quantity_method"],
+                    notes=f"{len(d['contributing_drawings'])}개 활성 도면에서 합산",
+                )
+            )
+
+        return ProjectTakeoffResult(
+            project_id=project_id,
+            project_name=project_name,
+            total_active_drawings=len(active_scopes),
+            total_inactive_drawings=len(inactive_scopes),
+            summary=summary_rows,
+            drawings_breakdown=drawings_breakdown,
+            drawings_scope=scopes,
+            scope_warnings=scope_warnings,
+            unresolved_count=total_unresolved,
+            is_provisional=any_provisional,
+            exported_at=datetime.now(UTC),
+        )
+
+    # -------------------------------------------------------- Revision Comparison
+    def compare_revisions(
+        self, project_id: str, base_drawing_id: str, compare_drawing_id: str
+    ) -> RevisionComparisonResult:
+        base_takeoff = self.calculate_takeoff(project_id, base_drawing_id)
+        compare_takeoff = self.calculate_takeoff(project_id, compare_drawing_id)
+        base_scope = self.get_drawing_scope(project_id, base_drawing_id)
+        compare_scope = self.get_drawing_scope(project_id, compare_drawing_id)
+
+        base_sum_map = {
+            (r.item_code, r.unit): r for r in (base_takeoff.summary if base_takeoff else [])
+        }
+        compare_sum_map = {
+            (r.item_code, r.unit): r for r in (compare_takeoff.summary if compare_takeoff else [])
+        }
+
+        all_keys = sorted(set(base_sum_map.keys()) | set(compare_sum_map.keys()))
+        items_delta: list[RevisionItemDelta] = []
+        total_base = 0
+        total_compare = 0
+
+        for item_code, unit in all_keys:
+            b_row = base_sum_map.get((item_code, unit))
+            c_row = compare_sum_map.get((item_code, unit))
+            b_qty = b_row.quantity if b_row else 0
+            c_qty = c_row.quantity if c_row else 0
+            delta = c_qty - b_qty
+            total_base += b_qty
+            total_compare += c_qty
+
+            item_name = c_row.item_name if c_row else (b_row.item_name if b_row else item_code)
+            spec = c_row.specification if c_row else (b_row.specification if b_row else "기본")
+
+            if b_qty == 0 and c_qty > 0:
+                change_type = "ADDED"
+            elif b_qty > 0 and c_qty == 0:
+                change_type = "REMOVED"
+            elif delta > 0:
+                change_type = "INCREASED"
+            elif delta < 0:
+                change_type = "DECREASED"
+            else:
+                change_type = "UNCHANGED"
+
+            items_delta.append(
+                RevisionItemDelta(
+                    item_code=item_code,
+                    item_name=item_name,
+                    specification=spec,
+                    unit=unit,
+                    base_quantity=b_qty,
+                    compare_quantity=c_qty,
+                    delta=delta,
+                    change_type=change_type,
+                    notes=f"기준: {b_qty} {unit} → 변경: {c_qty} {unit} ({delta:+d})",
+                )
+            )
+
+        # Object-level correspondence diff
+        base_ev = base_takeoff.evidence if base_takeoff else []
+        compare_ev = compare_takeoff.evidence if compare_takeoff else []
+
+        object_deltas: list[RevisionObjectDelta] = []
+        matched_base_ids: set[str] = set()
+
+        for c_obj in compare_ev:
+            if c_obj.inclusion_status != InclusionStatus.INCLUDED:
+                continue
+            best_match: TakeoffEvidenceRow | None = None
+            best_dist = float("inf")
+            for b_obj in base_ev:
+                if b_obj.inclusion_status != InclusionStatus.INCLUDED:
+                    continue
+                if b_obj.source_object_id in matched_base_ids:
+                    continue
+                if b_obj.mapped_item_code == c_obj.mapped_item_code:
+                    dist = math.hypot(b_obj.x - c_obj.x, b_obj.y - c_obj.y)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_match = b_obj
+
+            if best_match and best_dist < 1.0:
+                matched_base_ids.add(best_match.source_object_id)
+                object_deltas.append(
+                    RevisionObjectDelta(
+                        object_id=c_obj.source_object_id,
+                        item_code=c_obj.mapped_item_code,
+                        x=c_obj.x,
+                        y=c_obj.y,
+                        layer=c_obj.layer_name,
+                        match_status="MATCHED",
+                        confidence=1.0,
+                        notes="동일 위치 기물 일치",
+                    )
+                )
+            elif best_match and best_dist < 60.0:
+                matched_base_ids.add(best_match.source_object_id)
+                object_deltas.append(
+                    RevisionObjectDelta(
+                        object_id=c_obj.source_object_id,
+                        item_code=c_obj.mapped_item_code,
+                        x=c_obj.x,
+                        y=c_obj.y,
+                        layer=c_obj.layer_name,
+                        match_status="PROPOSED_MATCH",
+                        confidence=0.75,
+                        notes="위치 근접 기물 (추정/검토 필요)",
+                    )
+                )
+            else:
+                object_deltas.append(
+                    RevisionObjectDelta(
+                        object_id=c_obj.source_object_id,
+                        item_code=c_obj.mapped_item_code,
+                        x=c_obj.x,
+                        y=c_obj.y,
+                        layer=c_obj.layer_name,
+                        match_status="ADDED",
+                        confidence=1.0,
+                        notes="신규 추가된 기물",
+                    )
+                )
+
+        for b_obj in base_ev:
+            if b_obj.inclusion_status == InclusionStatus.INCLUDED and b_obj.source_object_id not in matched_base_ids:
+                object_deltas.append(
+                    RevisionObjectDelta(
+                        object_id=b_obj.source_object_id,
+                        item_code=b_obj.mapped_item_code,
+                        x=b_obj.x,
+                        y=b_obj.y,
+                        layer=b_obj.layer_name,
+                        match_status="REMOVED",
+                        confidence=1.0,
+                        notes="설계변경으로 삭제된 기물",
+                    )
+                )
+
+        return RevisionComparisonResult(
+            project_id=project_id,
+            base_drawing={
+                "drawing_id": base_drawing_id,
+                "drawing_name": base_takeoff.drawing_name if base_takeoff else "",
+                "revision": base_scope.revision,
+                "sheet_key": base_scope.sheet_key,
+                "floor": base_scope.floor,
+                "discipline": base_scope.discipline,
+                "total_quantity": total_base,
+            },
+            compare_drawing={
+                "drawing_id": compare_drawing_id,
+                "drawing_name": compare_takeoff.drawing_name if compare_takeoff else "",
+                "revision": compare_scope.revision,
+                "sheet_key": compare_scope.sheet_key,
+                "floor": compare_scope.floor,
+                "discipline": compare_scope.discipline,
+                "total_quantity": total_compare,
+            },
+            items_delta=items_delta,
+            object_deltas=object_deltas,
+            total_base_qty=total_base,
+            total_compare_qty=total_compare,
+            total_delta=total_compare - total_base,
+            notes=f"품목 총합 증감: {total_compare - total_base:+d}",
         )
 
     def _save_json(self, path: Path, data: Any) -> None:

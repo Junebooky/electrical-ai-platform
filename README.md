@@ -25,6 +25,12 @@
    - Summary와 Evidence 2개 시트가 포함된 스타일링된 `.xlsx` 파일 즉시 다운로드.
 6. **투명한 도면 경고**:
    - 단위 미설정(`$INSUNITS=0`), 외부참조(XREF), 중첩/동적 블록을 숨기지 않고 경고로 안내.
+7. **다중 도면 스코프 및 리비전 관리 (Issue #35)**:
+   - 층/구역(`floor`, `zone`, `sheet_key`, `sheet_role`) 단위 스코프 분리 및 통합 적산.
+   - 단일 `sheet_key` 당 정확히 1개 활성 REV 배타성 강제 및 구도면 중복 집계 원천 차단.
+   - 참조도면(`sheet_role: REFERENCE`) 자동 적산 제외 및 스코프 중복 경고.
+   - 설계변경 물량 증감(Revision Pragmatic Diff, Delta +/-) 및 객체 단위 매칭 추적.
+   - 4시트 전문 Excel(`Project Summary`, `Drawing Breakdown`, `Revision Delta`, `Evidence`) 및 CSV 내보내기 (수식 주입 방어 적용).
 
 ---
 
@@ -35,7 +41,9 @@
 ./scripts/dev-start.sh
 ```
 - 사전 필수 환경(Python 3.12+, Node 20+) 및 포트 충돌(8000, 3000)을 자동 진단하고 백엔드와 프론트엔드를 한 번에 실행합니다.
-- 웹 브라우저에서 **`http://localhost:3000`** 접속 후, 상단 **[⚡ 실전 데모 프로젝트 불러오기]**를 누르면 1초 만에 3종 도면(IMAGE, DXF, PDF)이 로드됩니다.
+- 웹 브라우저에서 **`http://localhost:3000`** 접속 후:
+  - **[다중 도면 데모 (Issue #35)]**: 14 EA $\rightarrow$ 18 EA (+4 EA) 리비전 교체 및 4시트 엑셀 검증.
+  - **[실전 데모 (Live Demo)]**: 3종 멀티포맷(IMAGE, DXF, PDF) 기호 시각 검색 및 검수.
 - 서비스 종료 시 터미널에서 `Ctrl + C` 또는 `./scripts/dev-stop.sh`를 실행합니다.
 
 ### 상세 문서 안내
@@ -68,11 +76,12 @@ npm --prefix apps/web run lint
 # 2. 정적 타입 검사
 uv run mypy .
 
-# 3. 단위 및 통합 테스트 실행 (18개 테스트 전체)
+# 3. 단위 및 통합 테스트 실행 (111개 테스트 전체 통과)
 uv run pytest
 
-# 4. 프론트엔드 프로덕션 빌드 검증
+# 4. 프론트엔드 프로덕션 빌드 및 E2E 테스트 검증
 npm --prefix apps/web run build
+npm --prefix apps/web run test:multi-drawing
 ```
 
 ---

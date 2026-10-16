@@ -122,8 +122,8 @@ $ (cd apps/web && npm run test:playwright)
    - 웹 대시보드: `http://localhost:3000`
    - API 스웨거: `http://127.0.0.1:8000/docs`
 3. **실전 데모 체험**:
-   - 상단 헤더 우측의 **[⚡ 실전 데모 프로젝트 불러오기]** 버튼 클릭.
-   - `floorplan_sample.png` 선택 후 상단 툴바 **[기호 검색]** 탭 클릭 $\rightarrow$ 조명 심벌 드래그 크롭 $\rightarrow$ [기호 검색 실행] $\rightarrow$ 키보드 `A`/`R`로 검수 $\rightarrow$ [일괄 승인] $\rightarrow$ [물량산출표] 탭에서 `LIGHT` 수량 확인 $\rightarrow$ [Excel 내보내기].
+   - **[다중 도면 데모 (Issue #35)]**: 1F REV0(6) + 2F(8) = 14 LIGHT $\rightarrow$ 1F REV1(10) 교체 시 18 LIGHT (+4 EA) $\rightarrow$ 설계변경 비교 & 4시트 엑셀 내보내기 검증.
+   - **[실전 종합 데모]**: `floorplan_sample.png` 선택 후 상단 툴바 **[기호 검색]** 탭 클릭 $\rightarrow$ 조명 심벌 드래그 크롭 $\rightarrow$ [기호 검색 실행] $\rightarrow$ 키보드 `A`/`R`로 검수 $\rightarrow$ [일괄 승인] $\rightarrow$ [물량산출표] 탭에서 `LIGHT` 수량 확인 $\rightarrow$ [Excel 내보내기].
 4. **종료**:
    - 터미널에서 `Ctrl + C` 누르거나 별도 창에서 `./scripts/dev-stop.sh` 실행.
 
@@ -131,11 +131,15 @@ $ (cd apps/web && npm run test:playwright)
 
 ---
 
-## 7. 1차 출시 후보(RC) 및 PO 승인 요청 사항
+## 7. 2차 출시 후보 (Issue #35 다중 도면·리비전 통합 RC) 및 PO 승인 요청 사항
 
 - [x] Multi-format (DXF, Image, PDF) 단일 통합 파이프라인 완성
 - [x] 사용자 지정 기호 드래그 검색 및 단축키 검수 워크플로우 완성
-- [x] 범례 매핑 템플릿 시스템 및 2시트 엑셀 내보내기 완성
-- [x] 원클릭 로컬 구동 스크립트 및 3종 도면 실전 데모 시드 완성
-- [x] GitHub CI (Python 104건, Web build, Typecheck) 및 Playwright E2E 10건 전체 통과
+- [x] 범례 매핑 템플릿 시스템 및 2시트/4시트 엑셀 내보내기 완성
+- [x] 원클릭 로컬 구동 스크립트 및 2종 실전 데모 시드 완성
+- [x] **[Issue #35] 다중 도면 스코프 등록부 (`sheet_key`, `floor`, `zone`, `sheet_role`, `active_for_takeoff`) 완성**
+- [x] **[Issue #35] 층/구역 단위 충돌 방지 및 단일 sheet_key 당 1개 활성 REV 배타성 완성**
+- [x] **[Issue #35] 프로젝트 통합 적산 API (`GET /api/projects/{id}/takeoff`) 및 단위 분리 안전성 완성**
+- [x] **[Issue #35] 설계변경 실용적 차이 분석 (`GET /api/projects/{id}/revisions/compare`) 및 4시트 엑셀 완성**
+- [x] **[Issue #35] 합성 DXF 픽스처 4종 및 14 $\rightarrow$ 18 (+4 EA) 정답 검증 완료 (pytest 111건 + E2E Playwright 통과)**
 - [ ] **PO 명시 승인 요청:** main 브랜치 통합 및 제한적 사내 사용자 베타 배포 진행 승인
