@@ -276,3 +276,51 @@ export interface DrawingSummary {
   pages?: PdfPageInfo[];
 }
 
+export type CandidateStatus = "PROPOSED" | "ACCEPTED" | "REJECTED";
+
+export interface SymbolCandidate {
+  candidate_id: string;
+  drawing_id: string;
+  page_index: number;
+  coordinate_space: "WORLD" | "IMAGE_PIXEL" | "PDF_PAGE_POINT" | string;
+  x: number;
+  y: number;
+  bbox: [number, number, number, number];
+  suggested_item_code: string;
+  suggested_item_name: string;
+  confidence: number;
+  detection_source: "DXF_BLOCK" | "PDF_VECTOR_RULE" | "IMAGE_TEMPLATE" | string;
+  status: CandidateStatus;
+  reviewed_item_code?: string | null;
+  reviewed_at?: string | null;
+  review_note?: string;
+  raw_evidence?: Record<string, unknown>;
+}
+
+export interface CandidateReviewUpdate {
+  candidate_id: string;
+  status: CandidateStatus;
+  reviewed_item_code?: string | null;
+  review_note?: string;
+}
+
+export interface CandidateBulkReviewRequest {
+  action?: "ACCEPT_ALL" | "REJECT_ALL" | "RESET_ALL";
+  filter_item_code?: string;
+  updates?: CandidateReviewUpdate[];
+}
+
+export interface CandidatesSummary {
+  total: number;
+  proposed: number;
+  accepted: number;
+  rejected: number;
+}
+
+export interface CandidatesResponse {
+  drawing_id: string;
+  summary: CandidatesSummary;
+  candidates: SymbolCandidate[];
+}
+
+

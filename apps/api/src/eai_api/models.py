@@ -5,8 +5,21 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class CandidateStatus(StrEnum):
+    PROPOSED = "PROPOSED"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
+class DetectionSource(StrEnum):
+    DXF_BLOCK = "DXF_BLOCK"
+    PDF_VECTOR_RULE = "PDF_VECTOR_RULE"
+    IMAGE_TEMPLATE = "IMAGE_TEMPLATE"
 
 
 class InclusionStatus(StrEnum):
@@ -154,3 +167,62 @@ class DrawingSummary(BaseModel):
     dimensions: dict[str, int] | None = None
     page_count: int = 1
     pages: list[dict[str, object]] | None = None
+
+
+class SymbolCandidate(BaseModel):
+    """Detected symbol candidate for electrical equipment (Issue #23)."""
+    model_config = ConfigDict(extra="forbid")
+    candidate_id: str
+    drawing_id: str
+    page_index: int = 0
+    coordinate_space: str  # "WORLD", "IMAGE_PIXEL", "PDF_PAGE_POINT"
+    x: float
+    y: float
+    bbox: list[float]  # [x0, y0, x1, y1]
+    suggested_item_code: str
+    suggested_item_name: str
+    confidence: float  # 0.0 ~ 1.0
+    detection_source: str
+    status: CandidateStatus = CandidateStatus.PROPOSED
+    reviewed_item_code: str | None = None
+    reviewed_at: datetime | None = None
+    review_note: str = ""
+    raw_evidence: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("x", "y")
+    @classmethod
+    def validate_finite_coords(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("좌표값은 유한한 실수(finite float)여야 합니다.")
+        return v
+
+
+class CandidateReviewUpdate(BaseModel):
+    """Individual candidate review update (Issue #23)."""
+    model_config = ConfigDict(extra="forbid")
+    candidate_id: str
+    status: CandidateStatus
+    reviewed_item_code: str | None = None
+    review_note: str = ""
+
+
+class CandidateBulkReviewRequest(BaseModel):
+    """Bulk or batch review update request (Issue #23)."""
+    model_config = ConfigDict(extra="forbid")
+    action: str | None = None  # "ACCEPT_ALL", "REJECT_ALL", "RESET_ALL"
+    filter_item_code: str | None = None
+    updates: list[CandidateReviewUpdate] | None = None
+
+
+class CandidatesSummary(BaseModel):
+    total: int
+    proposed: int
+    accepted: int
+    rejected: int
+
+
+class CandidatesResponse(BaseModel):
+    drawing_id: str
+    summary: CandidatesSummary
+    candidates: list[SymbolCandidate]
+

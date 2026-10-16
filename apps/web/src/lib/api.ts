@@ -7,6 +7,8 @@ import {
   DrawingSummary,
   TakeoffResult,
   PdfPageFeatures,
+  CandidateBulkReviewRequest,
+  CandidatesResponse,
 } from "@/types/cad";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -185,6 +187,47 @@ export const api = {
     const res = await fetch(
       `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/pages/${pageIndex}/features`
     );
+    return handleResponse(res);
+  },
+
+  getCandidates: async (
+    projectId: string,
+    drawingId: string
+  ): Promise<CandidatesResponse> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/candidates`);
+    return handleResponse(res);
+  },
+
+  detectCandidates: async (
+    projectId: string,
+    drawingId: string
+  ): Promise<CandidatesResponse> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/candidates/detect`, {
+      method: "POST",
+    });
+    return handleResponse(res);
+  },
+
+  reviewCandidates: async (
+    projectId: string,
+    drawingId: string,
+    body: CandidateBulkReviewRequest
+  ): Promise<CandidatesResponse> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/candidates/review`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return handleResponse(res);
+  },
+
+  clearCandidates: async (
+    projectId: string,
+    drawingId: string
+  ): Promise<{ status: string }> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/candidates`, {
+      method: "DELETE",
+    });
     return handleResponse(res);
   },
 

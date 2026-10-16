@@ -6,6 +6,7 @@ import math
 import os
 import urllib.parse
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from cad_engine import DxfLoadError, parse_dxf
@@ -14,9 +15,14 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from .detector import detect_candidates
 from .exporter import export_csv_evidence, export_csv_summary, export_xlsx
 from .image_parser import build_image_drawing, inspect_image
 from .models import (
+    CandidateBulkReviewRequest,
+    CandidatesResponse,
+    CandidatesSummary,
+    CandidateStatus,
     DrawingSummary,
     EvidenceReviewItem,
     InclusionStatus,
@@ -24,6 +30,7 @@ from .models import (
     ManualObjectItem,
     ProjectCreate,
     ProjectMetadata,
+    SymbolCandidate,
     TakeoffResult,
 )
 from .pdf_parser import (
@@ -694,6 +701,157 @@ def get_takeoff(project_id: str, drawing_id: str) -> TakeoffResult:
     if not result:
         raise HTTPException(status_code=404, detail="도면 또는 집계 결과를 찾을 수 없습니다.")
     return result
+
+
+# ----------------------------------------------------------------------- Candidates (Issue #23)
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/candidates")
+def get_drawing_candidates(
+    project_id: str,
+    drawing_id: str,
+) -> CandidatesResponse:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    candidates = storage.get_candidates(project_id, drawing_id)
+    summary = CandidatesSummary(
+        total=len(candidates),
+        proposed=sum(1 for c in candidates if c.status == CandidateStatus.PROPOSED),
+        accepted=sum(1 for c in candidates if c.status == CandidateStatus.ACCEPTED),
+        rejected=sum(1 for c in candidates if c.status == CandidateStatus.REJECTED),
+    )
+    return CandidatesResponse(
+        drawing_id=drawing_id,
+        summary=summary,
+        candidates=candidates,
+    )
+
+
+@app.post("/api/projects/{project_id}/drawings/{drawing_id}/candidates/detect")
+def run_candidate_detection(
+    project_id: str,
+    drawing_id: str,
+) -> CandidatesResponse:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    meta = storage.get_drawing_meta(project_id, drawing_id)
+    if not drawing or not meta:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    raw_path = storage.get_raw_drawing_path(project_id, drawing_id)
+    raw_bytes = raw_path.read_bytes() if raw_path and raw_path.exists() else b""
+
+    source_type = str(meta.get("source_type") or getattr(drawing, "source_type", "DXF"))
+    page_count = int(meta.get("page_count", 1) or getattr(drawing, "page_count", 1) or 1)
+    mapping_rules = storage.get_mappings(project_id, drawing_id)
+
+    new_candidates = detect_candidates(
+        drawing=drawing,
+        raw_bytes=raw_bytes,
+        drawing_id=drawing_id,
+        source_type=source_type,
+        page_count=page_count,
+        mapping_rules=mapping_rules,
+    )
+
+    # Preserve any existing user reviews
+    existing = {c.candidate_id: c for c in storage.get_candidates(project_id, drawing_id)}
+    merged: list[SymbolCandidate] = []
+    for cand in new_candidates:
+        if cand.candidate_id in existing:
+            prev = existing[cand.candidate_id]
+            cand.status = prev.status
+            cand.reviewed_item_code = prev.reviewed_item_code
+            cand.reviewed_at = prev.reviewed_at
+            cand.review_note = prev.review_note
+        merged.append(cand)
+
+    storage.save_candidates(project_id, drawing_id, merged)
+
+    summary = CandidatesSummary(
+        total=len(merged),
+        proposed=sum(1 for c in merged if c.status == CandidateStatus.PROPOSED),
+        accepted=sum(1 for c in merged if c.status == CandidateStatus.ACCEPTED),
+        rejected=sum(1 for c in merged if c.status == CandidateStatus.REJECTED),
+    )
+    return CandidatesResponse(
+        drawing_id=drawing_id,
+        summary=summary,
+        candidates=merged,
+    )
+
+
+@app.put("/api/projects/{project_id}/drawings/{drawing_id}/candidates/review")
+def review_drawing_candidates(
+    project_id: str,
+    drawing_id: str,
+    req: CandidateBulkReviewRequest,
+) -> CandidatesResponse:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    candidates = storage.get_candidates(project_id, drawing_id)
+    now = datetime.now(UTC)
+
+    if req.action:
+        for c in candidates:
+            if req.filter_item_code and c.suggested_item_code != req.filter_item_code:
+                continue
+
+            if req.action == "ACCEPT_ALL":
+                # P0-QTY-03: Only approve currently PROPOSED candidates, preserving existing ACCEPTED/REJECTED decisions
+                if c.status == CandidateStatus.PROPOSED:
+                    c.status = CandidateStatus.ACCEPTED
+                    c.reviewed_at = now
+                    if not c.review_note:
+                        c.review_note = "일괄 승인"
+            elif req.action == "REJECT_ALL":
+                # P0-QTY-03: Only reject currently PROPOSED candidates, preserving existing ACCEPTED/REJECTED decisions
+                if c.status == CandidateStatus.PROPOSED:
+                    c.status = CandidateStatus.REJECTED
+                    c.reviewed_at = now
+                    if not c.review_note:
+                        c.review_note = "일괄 거부"
+            elif req.action == "RESET_ALL":
+                c.status = CandidateStatus.PROPOSED
+                c.reviewed_item_code = None
+                c.reviewed_at = None
+                c.review_note = ""
+    elif req.updates:
+        update_map = {u.candidate_id: u for u in req.updates}
+        for c in candidates:
+            if c.candidate_id in update_map:
+                u = update_map[c.candidate_id]
+                c.status = u.status
+                c.reviewed_item_code = u.reviewed_item_code
+                c.review_note = u.review_note
+                c.reviewed_at = now
+
+    storage.save_candidates(project_id, drawing_id, candidates)
+
+    summary = CandidatesSummary(
+        total=len(candidates),
+        proposed=sum(1 for c in candidates if c.status == CandidateStatus.PROPOSED),
+        accepted=sum(1 for c in candidates if c.status == CandidateStatus.ACCEPTED),
+        rejected=sum(1 for c in candidates if c.status == CandidateStatus.REJECTED),
+    )
+    return CandidatesResponse(
+        drawing_id=drawing_id,
+        summary=summary,
+        candidates=candidates,
+    )
+
+
+@app.delete("/api/projects/{project_id}/drawings/{drawing_id}/candidates")
+def clear_drawing_candidates(
+    project_id: str,
+    drawing_id: str,
+) -> dict[str, str]:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    storage.save_candidates(project_id, drawing_id, [])
+    return {"status": "cleared"}
 
 
 # ----------------------------------------------------------------------- Export
