@@ -14,6 +14,7 @@ import {
 interface TakeoffTableProps {
   takeoff: TakeoffResult;
   selectedItemCode: string | null;
+  selectedObjectId?: string | null;
   onSelectItemCode: (code: string | null) => void;
   onSelectEvidence: (objectId: string) => void;
   csvSummaryUrl: string;
@@ -24,6 +25,7 @@ interface TakeoffTableProps {
 export function TakeoffTable({
   takeoff,
   selectedItemCode,
+  selectedObjectId,
   onSelectItemCode,
   onSelectEvidence,
   csvSummaryUrl,
@@ -243,12 +245,19 @@ export function TakeoffTable({
 
             {/* Evidence Rows */}
             <div className="space-y-2">
-              {filteredEvidence.map((ev) => (
-                <div
-                  key={ev.source_object_id}
-                  onClick={() => onSelectEvidence(ev.source_object_id)}
-                  className="p-2.5 rounded border border-slate-800 bg-slate-950/70 hover:border-slate-700 cursor-pointer text-xs transition"
-                >
+              {filteredEvidence.map((ev) => {
+                const isSelected = ev.source_object_id === selectedObjectId;
+                return (
+                  <div
+                    key={ev.source_object_id}
+                    data-testid={`evidence-row-${ev.source_object_id}`}
+                    onClick={() => onSelectEvidence(ev.source_object_id)}
+                    className={`p-2.5 rounded border cursor-pointer text-xs transition ${
+                      isSelected
+                        ? "bg-sky-950/80 border-sky-400 ring-1 ring-sky-400/80 shadow-lg shadow-sky-500/10"
+                        : "border-slate-800 bg-slate-950/70 hover:border-slate-700"
+                    }`}
+                  >
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-sky-400 font-semibold">
                       {ev.block_name}
@@ -282,8 +291,9 @@ export function TakeoffTable({
                     사유: {ev.review_reason}
                   </div>
                 </div>
-              ))}
-            </div>
+              );
+            })}
+          </div>
           </div>
         )}
       </div>

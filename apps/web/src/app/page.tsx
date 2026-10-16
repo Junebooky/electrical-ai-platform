@@ -37,6 +37,7 @@ import {
   Sparkles,
   Check,
   X,
+  Play,
 } from "lucide-react";
 
 export default function WorkspacePage() {
@@ -437,6 +438,50 @@ export default function WorkspacePage() {
     });
   };
 
+  // Live Demo Seed Project
+  const handleSeedDemo = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const res = await api.seedDemoProject();
+      const pList = await api.listProjects();
+      setProjects(pList);
+      const demoProj = pList.find((p) => p.id === res.project_id) || {
+        id: res.project_id,
+        name: res.project_name,
+        description: "실전 전기공사 샘플 프로젝트",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        drawing_count: res.drawings.length,
+      };
+      setCurrentProject(demoProj);
+      await refreshDrawings(demoProj.id, res.drawings[0]?.drawing_id);
+      setActiveRightTab("candidates");
+    } catch (err: unknown) {
+      console.error("Failed to seed demo project", err);
+      setErrorMessage("실전 데모 프로젝트 초기화 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Reload mappings after template application
+  const handleReloadMappings = async () => {
+    if (!currentProject || !currentDrawing) return;
+    const newMappings = await api.getMappings(currentProject.id, currentDrawing.drawing_id);
+    setMappings(newMappings);
+    await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+  };
+
+  // Bidirectional Inspection: Select evidence row & auto-switch PDF page if necessary
+  const handleSelectEvidence = (objectId: string) => {
+    setSelectedObjectId(objectId);
+    const ev = takeoff?.evidence.find((e) => e.source_object_id === objectId);
+    if (ev && ev.page_index !== undefined && ev.page_index !== null) {
+      setCurrentPageIndex(ev.page_index);
+    }
+  };
+
   // Find selected object and its evidence row
   const selectedObject: SourceObject | null = useMemo(() => {
     if (!selectedObjectId || !currentDrawing) return null;
@@ -617,6 +662,16 @@ export default function WorkspacePage() {
               if (file) handleFileUpload(file);
             }}
           />
+
+          <button
+            onClick={handleSeedDemo}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-emerald-600/20 transition"
+            title="CAD·PDF·이미지 종합 실전 데모 프로젝트 로드 (템플릿 및 기호 탐지 포함)"
+          >
+            <Play size={13} className="fill-current" />
+            <span>실전 데모 (Live Demo)</span>
+          </button>
 
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -1060,8 +1115,9 @@ export default function WorkspacePage() {
                   <TakeoffTable
                     takeoff={takeoff}
                     selectedItemCode={highlightedItemCode}
+                    selectedObjectId={selectedObjectId}
                     onSelectItemCode={(code) => setHighlightedItemCode(code)}
-                    onSelectEvidence={(id) => setSelectedObjectId(id)}
+                    onSelectEvidence={handleSelectEvidence}
                     csvSummaryUrl={api.getCsvExportUrl(
                       currentProject!.id,
                       currentDrawing.drawing_id,
@@ -1101,7 +1157,10 @@ export default function WorkspacePage() {
                       key={currentDrawing.drawing_id}
                       blocks={currentDrawing.blocks}
                       mappings={mappings}
+                      projectId={currentProject?.id}
+                      drawingId={currentDrawing.drawing_id}
                       onSaveMappings={handleSaveMappings}
+                      onReloadMappings={handleReloadMappings}
                       isSaving={isSaving}
                     />
                   )

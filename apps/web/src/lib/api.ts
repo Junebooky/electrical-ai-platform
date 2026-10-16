@@ -9,6 +9,10 @@ import {
   PdfPageFeatures,
   CandidateBulkReviewRequest,
   CandidatesResponse,
+  MappingTemplate,
+  MappingTemplateCreate,
+  MappingTemplateListResponse,
+  DemoSeedResponse,
 } from "@/types/cad";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -234,4 +238,58 @@ export const api = {
   getRawUrl: (projectId: string, drawingId: string): string => {
     return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/raw`;
   },
+
+  listMappingTemplates: async (): Promise<MappingTemplateListResponse> => {
+    const res = await fetch(`${API_BASE}/api/mapping-templates`);
+    return handleResponse(res);
+  },
+
+  getMappingTemplate: async (templateId: string): Promise<MappingTemplate> => {
+    const res = await fetch(`${API_BASE}/api/mapping-templates/${templateId}`);
+    return handleResponse(res);
+  },
+
+  createMappingTemplate: async (data: MappingTemplateCreate): Promise<MappingTemplate> => {
+    const res = await fetch(`${API_BASE}/api/mapping-templates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(res);
+  },
+
+  deleteMappingTemplate: async (templateId: string): Promise<{ status: string }> => {
+    const res = await fetch(`${API_BASE}/api/mapping-templates/${templateId}`, {
+      method: "DELETE",
+    });
+    return handleResponse(res);
+  },
+
+  applyMappingTemplate: async (
+    projectId: string,
+    drawingId: string,
+    templateId: string,
+    mergeStrategy: "MERGE" | "REPLACE" = "MERGE"
+  ): Promise<ItemMappingRule[]> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/apply-template`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_id: templateId,
+          merge_strategy: mergeStrategy,
+        }),
+      }
+    );
+    return handleResponse(res);
+  },
+
+  seedDemoProject: async (): Promise<DemoSeedResponse> => {
+    const res = await fetch(`${API_BASE}/api/demo/seed`, {
+      method: "POST",
+    });
+    return handleResponse(res);
+  },
 };
+

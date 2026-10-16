@@ -129,9 +129,58 @@ export function CadViewer({
     }
   }, [extents, isTopLeftOrigin]);
 
+  const lastCanvasClickTimeRef = useRef<number>(0);
+
   useEffect(() => {
     fitToScreen();
   }, [fitToScreen]);
+
+  // Bidirectional Inspection: Center viewport on selected object or candidate when selected from external table
+  useEffect(() => {
+    if (!containerRef.current) return;
+    if (Date.now() - lastCanvasClickTimeRef.current < 400) {
+      return; // Initiated by direct canvas click, keep user's current pan
+    }
+
+    let targetCoord: [number, number] | null = null;
+    if (selectedObjectId) {
+      const cadObj = drawing.objects.find((o) => o.id === selectedObjectId);
+      if (cadObj?.insert_point) {
+        targetCoord = [cadObj.insert_point[0], cadObj.insert_point[1]];
+      } else {
+        const marker = manualMarkers.find((m) => m.id === selectedObjectId);
+        if (marker) {
+          targetCoord = [marker.x, marker.y];
+        } else {
+          const cand = candidates.find(
+            (c) =>
+              c.candidate_id === selectedObjectId ||
+              c.raw_evidence?.source_object_id === selectedObjectId
+          );
+          if (cand) {
+            targetCoord = [cand.x, cand.y];
+          }
+        }
+      }
+    } else if (selectedCandidateId) {
+      const cand = candidates.find((c) => c.candidate_id === selectedCandidateId);
+      if (cand) {
+        targetCoord = [cand.x, cand.y];
+      }
+    }
+
+    if (targetCoord && containerRef.current) {
+      const { clientWidth: w, clientHeight: h } = containerRef.current;
+      if (w > 0 && h > 0) {
+        const [tx, ty] = targetCoord;
+        const targetScale = Math.max(scale, 0.8);
+        const newPanX = w / 2 - tx * targetScale;
+        const newPanY = isTopLeftOrigin ? h / 2 - ty * targetScale : h / 2 + ty * targetScale;
+        setScale(targetScale);
+        setPan({ x: newPanX, y: newPanY });
+      }
+    }
+  }, [selectedObjectId, selectedCandidateId, drawing.objects, manualMarkers, candidates, isTopLeftOrigin, scale]);
 
   // Handle zoom with mouse wheel
   const handleWheel = (e: React.WheelEvent) => {
@@ -450,6 +499,7 @@ export function CadViewer({
                   className="pointer-events-auto cursor-pointer interactive-marker"
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
+                    lastCanvasClickTimeRef.current = Date.now();
                     e.stopPropagation();
                     onSelectObject(obj.id);
                   }}
@@ -520,6 +570,7 @@ export function CadViewer({
                 className="pointer-events-auto cursor-pointer interactive-marker"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
+                  lastCanvasClickTimeRef.current = Date.now();
                   e.stopPropagation();
                   onSelectObject(m.id);
                 }}
@@ -576,7 +627,10 @@ export function CadViewer({
                   return true;
                 })
                 .map((c) => {
-                  const isSelected = c.candidate_id === selectedCandidateId;
+                  const isSelected =
+                    c.candidate_id === selectedCandidateId ||
+                    c.candidate_id === selectedObjectId ||
+                    Boolean(c.raw_evidence?.source_object_id && c.raw_evidence.source_object_id === selectedObjectId);
                   const isAccepted = c.status === "ACCEPTED";
                   const isRejected = c.status === "REJECTED";
                   const candY = isTopLeftOrigin ? c.y : -c.y;
@@ -604,6 +658,7 @@ export function CadViewer({
                       className="pointer-events-auto cursor-pointer interactive-candidate"
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
+                        lastCanvasClickTimeRef.current = Date.now();
                         e.stopPropagation();
                         onSelectCandidate?.(c);
                       }}

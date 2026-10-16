@@ -323,4 +323,51 @@ export interface CandidatesResponse {
   candidates: SymbolCandidate[];
 }
 
+export interface MappingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  version?: string;
+  is_builtin: boolean;
+  rules: ItemMappingRule[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MappingTemplateCreate {
+  name: string;
+  description?: string;
+  category?: string;
+  rules: ItemMappingRule[];
+}
+
+export interface ApplyTemplateRequest {
+  template_id: string;
+  merge_strategy: "MERGE" | "REPLACE";
+}
+
+export interface MappingTemplateListResponse {
+  templates: MappingTemplate[];
+  total: number;
+}
+
+export interface DemoDrawingItem {
+  drawing_id: string;
+  filename: string;
+  source_type: string;
+  objects_count: number;
+  candidates_count: number;
+  status: string;
+}
+
+export interface DemoSeedResponse {
+  status: string;
+  project_id: string;
+  project_name: string;
+  drawings: DemoDrawingItem[];
+  applied_template: string;
+  note?: string;
+}
+
 
