@@ -20,6 +20,8 @@ from .models import (
     InclusionStatus,
     ItemMappingRule,
     ManualObjectItem,
+    MappingTemplate,
+    MappingTemplateCreate,
     ProjectCreate,
     ProjectMetadata,
     QuantityMethod,
@@ -38,6 +40,8 @@ class Storage:
         self.root = root or DEFAULT_DATA_DIR
         self.projects_dir = self.root / "projects"
         self.projects_dir.mkdir(parents=True, exist_ok=True)
+        self.templates_dir = self.root / "templates"
+        self.templates_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------- Projects
     def create_project(self, payload: ProjectCreate) -> ProjectMetadata:
@@ -290,6 +294,133 @@ class Storage:
         validate_canonical_mappings(mappings)
         f = self.projects_dir / project_id / "drawings" / drawing_id / "mappings.json"
         self._save_json(f, [m.model_dump(mode="json") for m in mappings])
+
+    # ------------------------------------------------------------- Mapping Templates (Issue #23)
+    def _get_builtin_templates(self) -> list[MappingTemplate]:
+        now = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        return [
+            MappingTemplate(
+                id="tpl_standard_elec",
+                name="표준 전기설비 기본 템플릿 (조명·전열·스위치·분전반)",
+                description="아파트·상업용 기본 블록명(LT-DL, OT-2P, SW-1 등) 표준 매핑",
+                created_at=now,
+                updated_at=now,
+                is_builtin=True,
+                rules=[
+                    ItemMappingRule(block_name="LT-DL", item_code="LIGHT", item_name="다운라이트", unit="EA"),
+                    ItemMappingRule(block_name="LT-FL", item_code="LIGHT", item_name="형광등/직부등", unit="EA"),
+                    ItemMappingRule(block_name="LIGHT", item_code="LIGHT", item_name="조명기구", unit="EA"),
+                    ItemMappingRule(block_name="OT-2P", item_code="OUTLET", item_name="2구 매입 콘센트", unit="EA"),
+                    ItemMappingRule(block_name="OUTLET", item_code="OUTLET", item_name="전열 콘센트", unit="EA"),
+                    ItemMappingRule(block_name="SW-1", item_code="SWITCH", item_name="1로 조명 스위치", unit="EA"),
+                    ItemMappingRule(block_name="SW-2", item_code="SWITCH", item_name="2로 조명 스위치", unit="EA"),
+                    ItemMappingRule(block_name="SWITCH", item_code="SWITCH", item_name="조명 스위치", unit="EA"),
+                    ItemMappingRule(block_name="PANEL", item_code="PANEL", item_name="분전반", unit="EA"),
+                    ItemMappingRule(block_name="DB", item_code="PANEL", item_name="배전분전반", unit="EA"),
+                ],
+            ),
+            MappingTemplate(
+                id="tpl_kec_standard",
+                name="KEC 규격 배선기구 템플릿",
+                description="한국전기설비규정(KEC) 표준 심벌 및 접지/방수 기구 매핑",
+                created_at=now,
+                updated_at=now,
+                is_builtin=True,
+                rules=[
+                    ItemMappingRule(block_name="KEC-LT", item_code="LIGHT", item_name="KEC 고효율 조명기구", unit="EA"),
+                    ItemMappingRule(block_name="KEC-CON", item_code="OUTLET", item_name="KEC 접지극부 2구 콘센트", unit="EA"),
+                    ItemMappingRule(block_name="KEC-SW", item_code="SWITCH", item_name="KEC 로커 스위치", unit="EA"),
+                    ItemMappingRule(block_name="KEC-DB", item_code="PANEL", item_name="KEC 주택용 분전반", unit="EA"),
+                ],
+            ),
+        ]
+
+    def list_mapping_templates(self) -> list[MappingTemplate]:
+        templates = self._get_builtin_templates()
+        if self.templates_dir.exists():
+            for t_file in sorted(self.templates_dir.glob("*.json")):
+                try:
+                    data = json.loads(t_file.read_text(encoding="utf-8"))
+                    templates.append(MappingTemplate(**data))
+                except Exception:
+                    pass
+        return templates
+
+    def get_mapping_template(self, template_id: str) -> MappingTemplate | None:
+        for t in self._get_builtin_templates():
+            if t.id == template_id:
+                return t
+        t_file = self.templates_dir / f"{template_id}.json"
+        if t_file.exists():
+            try:
+                data = json.loads(t_file.read_text(encoding="utf-8"))
+                return MappingTemplate(**data)
+            except Exception:
+                pass
+        return None
+
+    def create_mapping_template(self, payload: MappingTemplateCreate) -> MappingTemplate:
+        tpl_id = f"tpl_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(UTC)
+        validate_canonical_mappings(payload.rules)
+        template = MappingTemplate(
+            id=tpl_id,
+            name=payload.name,
+            description=payload.description,
+            created_at=now,
+            updated_at=now,
+            rules=payload.rules,
+            is_builtin=False,
+        )
+        self.templates_dir.mkdir(parents=True, exist_ok=True)
+        self._save_json(self.templates_dir / f"{tpl_id}.json", template.model_dump(mode="json"))
+        return template
+
+    def delete_mapping_template(self, template_id: str) -> bool:
+        if any(t.id == template_id for t in self._get_builtin_templates()):
+            return False
+        t_file = self.templates_dir / f"{template_id}.json"
+        if t_file.exists():
+            t_file.unlink()
+            return True
+        return False
+
+    def apply_mapping_template(
+        self,
+        project_id: str,
+        drawing_id: str,
+        template_id: str,
+        merge_strategy: str = "MERGE",
+    ) -> list[ItemMappingRule]:
+        template = self.get_mapping_template(template_id)
+        if not template:
+            raise ValueError(f"템플릿을 찾을 수 없습니다: {template_id}")
+
+        existing = self.get_mappings(project_id, drawing_id)
+        if merge_strategy == "REPLACE":
+            new_rules = list(template.rules)
+        else:
+            tpl_rule_map = {r.block_name: r for r in template.rules}
+            merged: list[ItemMappingRule] = []
+            seen_blocks: set[str] = set()
+
+            for r in existing:
+                if r.block_name in tpl_rule_map:
+                    merged.append(tpl_rule_map[r.block_name])
+                    seen_blocks.add(r.block_name)
+                else:
+                    merged.append(r)
+                    seen_blocks.add(r.block_name)
+
+            for r in template.rules:
+                if r.block_name not in seen_blocks:
+                    merged.append(r)
+                    seen_blocks.add(r.block_name)
+
+            new_rules = merged
+
+        self.save_mappings(project_id, drawing_id, new_rules)
+        return new_rules
 
     # ------------------------------------------------------------- Reviews
     def get_reviews(self, project_id: str, drawing_id: str) -> dict[str, EvidenceReviewItem]:

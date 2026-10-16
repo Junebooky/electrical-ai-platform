@@ -323,4 +323,49 @@ export interface CandidatesResponse {
   candidates: SymbolCandidate[];
 }
 
+export interface MappingTemplateItem {
+  block_name: string;
+  item_code: string;
+  item_name: string;
+  specification?: string;
+  unit?: string;
+  notes?: string;
+}
+
+export interface MappingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  version?: string;
+  is_built_in?: boolean;
+  mappings: MappingTemplateItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApplyTemplateRequest {
+  template_id: string;
+  merge_strategy: "MERGE" | "REPLACE";
+}
+
+export interface MappingTemplateListResponse {
+  templates: MappingTemplate[];
+  total: number;
+}
+
+export interface DemoSeedResponse {
+  status: string;
+  project_id: string;
+  project_name: string;
+  drawings: {
+    drawing_id: string;
+    filename: string;
+    source_type: string;
+    status: string;
+    candidates_count?: number;
+  }[];
+  applied_template?: string;
+}
+
 

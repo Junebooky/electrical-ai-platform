@@ -226,3 +226,34 @@ class CandidatesResponse(BaseModel):
     summary: CandidatesSummary
     candidates: list[SymbolCandidate]
 
+
+# ---------------------------------------------------------------------------
+# Mapping Templates (Issue #23)
+# ---------------------------------------------------------------------------
+class MappingTemplate(BaseModel):
+    """Reusable legend / item mapping template (Issue #23)."""
+    id: str
+    name: str
+    description: str = ""
+    created_at: datetime
+    updated_at: datetime
+    rules: list[ItemMappingRule]
+    is_builtin: bool = False
+
+
+class MappingTemplateCreate(BaseModel):
+    """Payload to save a new mapping template."""
+    name: str
+    description: str = ""
+    rules: list[ItemMappingRule]
+
+
+class ApplyTemplateRequest(BaseModel):
+    """Payload to apply a mapping template to a drawing."""
+    template_id: str
+    merge_strategy: str = "MERGE"  # "MERGE" (default, keeps existing if not overlapping) or "REPLACE"
+
+
+class MappingTemplateListResponse(BaseModel):
+    templates: list[MappingTemplate]
+
