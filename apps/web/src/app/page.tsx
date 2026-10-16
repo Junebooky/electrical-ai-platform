@@ -44,12 +44,20 @@ export default function WorkspacePage() {
   const [highlightedItemCode, setHighlightedItemCode] = useState<string | null>(null);
   const [hiddenLayers, setHiddenLayers] = useState<Set<string>>(new Set());
   const [isAddManualMode, setIsAddManualMode] = useState(false);
+  const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
+
+  interface PendingManualMarker {
+    drawingId: string;
+    pageIndex: number;
+    x: number;
+    y: number;
+  }
 
   // Async state & race defense (QA-DEF-04)
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [pendingManualCoord, setPendingManualCoord] = useState<{ x: number; y: number } | null>(null);
+  const [pendingManualCoord, setPendingManualCoord] = useState<PendingManualMarker | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef<number>(0);
@@ -97,6 +105,7 @@ export default function WorkspacePage() {
         }
         setCurrentDrawing(drawingData);
         setMappings(mappingRules);
+        setCurrentPageIndex(0);
         await refreshTakeoff(projectId, drawingId);
         setSelectedObjectId(null);
         setHighlightedItemCode(null);
@@ -241,9 +250,25 @@ export default function WorkspacePage() {
     return list;
   }, [mappings]);
 
-  // Open Manual Object Dialog (DEC-011 / DEC-012)
+  // Open Manual Object Dialog (DEC-011 / DEC-012 / P0-01)
   const handleAddManualPoint = (x: number, y: number) => {
-    setPendingManualCoord({ x, y });
+    if (!currentDrawing) return;
+    const isPdf = currentDrawing.source_type === "PDF" || currentDrawing.coordinate_space === "PDF_PAGE_POINT";
+    setPendingManualCoord({
+      drawingId: currentDrawing.drawing_id,
+      pageIndex: isPdf ? currentPageIndex : 0,
+      x,
+      y,
+    });
+  };
+
+  // Safe page navigation canceling pending marker on page switch (P0-01)
+  const handlePageChange = (newIndex: number) => {
+    if (pendingManualCoord) {
+      setPendingManualCoord(null);
+    }
+    setCurrentPageIndex(newIndex);
+    setSelectedObjectId(null);
   };
 
   // Confirm manual object addition after mandatory item & reason selection
@@ -254,11 +279,16 @@ export default function WorkspacePage() {
     selectedUnit?: string
   ) => {
     if (!currentProject || !currentDrawing || !pendingManualCoord) return;
+    if (pendingManualCoord.drawingId !== currentDrawing.drawing_id) {
+      setPendingManualCoord(null);
+      return;
+    }
     setIsSaving(true);
     try {
       const manualId = `manual_${Date.now()}`;
       const matched = availableItems.find((i) => i.code === itemCode);
       const unit = matched ? (matched.unit || "EA").trim() : (selectedUnit?.trim() || "EA");
+      const isPdf = currentDrawing.source_type === "PDF" || currentDrawing.coordinate_space === "PDF_PAGE_POINT";
       await api.addManualObject(currentProject.id, currentDrawing.drawing_id, {
         id: manualId,
         drawing_id: currentDrawing.drawing_id,
@@ -268,6 +298,7 @@ export default function WorkspacePage() {
         item_name: matched?.name || itemCode,
         unit: unit,
         note: note ? `[${reason}] ${note}` : `[${reason}] 수동 추가`,
+        page_index: isPdf ? pendingManualCoord.pageIndex : 0,
       });
       setPendingManualCoord(null);
       setIsAddManualMode(false);
@@ -334,6 +365,7 @@ export default function WorkspacePage() {
         y: e.y,
         item_code: e.mapped_item_code,
         note: e.review_reason,
+        page_index: e.page_index ?? 0,
       }));
   }, [takeoff]);
 
@@ -391,11 +423,23 @@ export default function WorkspacePage() {
 
           {currentDrawing && (
             <div className="hidden lg:flex items-center gap-3 text-xs font-mono text-slate-300 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-              <span className={currentDrawing.source_type === "IMAGE" ? "text-amber-400 font-semibold" : "text-sky-400 font-semibold"}>
+              <span className={currentDrawing.source_type === "PDF" || currentDrawing.source_type === "IMAGE" ? "text-amber-400 font-semibold" : "text-sky-400 font-semibold"}>
                 {currentDrawing.source.filename}
               </span>
               <span className="text-slate-600">|</span>
-              {currentDrawing.source_type === "IMAGE" ? (
+              {currentDrawing.source_type === "PDF" ? (
+                <>
+                  <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded text-[11px]">
+                    PDF 도면 (수동 적산)
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span>
+                    페이지: {currentPageIndex + 1} / {currentDrawing.page_count || 1}
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span>수동 마커: {manualMarkers.length}개</span>
+                </>
+              ) : currentDrawing.source_type === "IMAGE" ? (
                 <>
                   <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded text-[11px]">
                     2D 이미지 (수동 마커)
@@ -439,7 +483,7 @@ export default function WorkspacePage() {
           <input
             type="file"
             ref={fileInputRef}
-            accept=".dxf,.png,.jpg,.jpeg"
+            accept=".dxf,.png,.jpg,.jpeg,.pdf"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -457,6 +501,43 @@ export default function WorkspacePage() {
           </button>
         </div>
       </header>
+
+      {/* PDF Mode Notice Banner & Page Navigation (PR B) */}
+      {currentDrawing?.source_type === "PDF" && (
+        <div className="bg-amber-950/70 border-b border-amber-800/60 px-4 py-2 text-xs text-amber-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded text-[10px] font-mono font-semibold">
+              PDF 모드 (PR B)
+            </span>
+            <span>
+              ※ PDF 도면을 표시했습니다. 기구 위치를 직접 표시해 주세요. (잠정 수량). 상단 <b>[누락 기구 수동 추가]</b> 활성화 후 도면을 클릭하여 각 페이지 좌표계(pt)에 마커(EA)를 등록합니다.
+            </span>
+          </div>
+          {currentDrawing.page_count && currentDrawing.page_count > 1 && (
+            <div className="flex items-center gap-2 bg-slate-900/80 px-2 py-1 rounded border border-slate-700">
+              <button
+                onClick={() => handlePageChange(Math.max(0, currentPageIndex - 1))}
+                disabled={Boolean(pendingManualCoord) || currentPageIndex <= 0}
+                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
+                title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "이전 페이지"}
+              >
+                ◀
+              </button>
+              <span className="font-mono font-medium text-xs text-slate-200">
+                {currentPageIndex + 1} / {currentDrawing.page_count} 페이지
+              </span>
+              <button
+                onClick={() => handlePageChange(Math.min((currentDrawing.page_count || 1) - 1, currentPageIndex + 1))}
+                disabled={Boolean(pendingManualCoord) || currentPageIndex >= (currentDrawing.page_count || 1) - 1}
+                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
+                title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "다음 페이지"}
+              >
+                ▶
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 2D Image Mode Notice Banner (FR-015/016) */}
       {currentDrawing?.source_type === "IMAGE" && (
@@ -506,13 +587,22 @@ export default function WorkspacePage() {
                 isAddManualMode={isAddManualMode}
                 onAddManualPoint={handleAddManualPoint}
                 onOutOfBoundsClick={(x, y, maxX, maxY) => {
-                  setErrorMessage(
-                    `도면 밖 좌표(X: ${Math.round(x)}, Y: ${Math.round(y)})에는 기구를 추가할 수 없습니다. 유효 도면 범위: [0, ${maxX}) × [0, ${maxY}) px (0~${maxX - 1}, 0~${maxY - 1})`
-                  );
+                  if (currentDrawing.source_type === "PDF") {
+                    setErrorMessage(
+                      `도면 밖 좌표(X: ${x.toFixed(1)}, Y: ${y.toFixed(1)})에는 기구를 추가할 수 없습니다. 페이지 유효 범위: [0, ${maxX.toFixed(1)}) × [0, ${maxY.toFixed(1)}) pt`
+                    );
+                  } else {
+                    setErrorMessage(
+                      `도면 밖 좌표(X: ${Math.round(x)}, Y: ${Math.round(y)})에는 기구를 추가할 수 없습니다. 유효 도면 범위: [0, ${maxX}) × [0, ${maxY}) px (0~${maxX - 1}, 0~${maxY - 1})`
+                    );
+                  }
                 }}
                 manualMarkers={manualMarkers}
+                currentPageIndex={currentPageIndex}
                 imageUrl={
-                  currentDrawing.source_type === "IMAGE" && currentProject
+                  currentDrawing.source_type === "PDF" && currentProject
+                    ? api.getPageImageUrl(currentProject.id, currentDrawing.drawing_id, currentPageIndex)
+                    : currentDrawing.source_type === "IMAGE" && currentProject
                     ? api.getImageUrl(currentProject.id, currentDrawing.drawing_id)
                     : null
                 }

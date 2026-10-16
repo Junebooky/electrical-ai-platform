@@ -1,0 +1,94 @@
+{
+  "scenario": "PDF-B-01 Multi-page manual takeoff ground truth",
+  "document": "pdf_b_2page_electrical.pdf",
+  "sha256": "225165c5519262c7a28a6c1ec41292c53b570c22c3e6b992487f3bfb89eeba58",
+  "page_count": 2,
+  "pages": [
+    {
+      "page_index": 0,
+      "dimensions_pt": {
+        "width": 612.0,
+        "height": 792.0
+      },
+      "rotation": 0,
+      "cropbox": [
+        0.0,
+        0.0,
+        612.0,
+        792.0
+      ],
+      "manual_markers": [
+        {
+          "id": "p0_lt_1",
+          "item_code": "LIGHT",
+          "item_name": "다운라이트",
+          "x": 100.0,
+          "y": 150.0,
+          "unit": "EA"
+        },
+        {
+          "id": "p0_lt_2",
+          "item_code": "LIGHT",
+          "item_name": "다운라이트",
+          "x": 300.0,
+          "y": 220.0,
+          "unit": "EA"
+        },
+        {
+          "id": "p0_lt_3",
+          "item_code": "LIGHT",
+          "item_name": "다운라이트",
+          "x": 500.0,
+          "y": 650.0,
+          "unit": "EA"
+        }
+      ]
+    },
+    {
+      "page_index": 1,
+      "dimensions_pt": {
+        "width": 552.0,
+        "height": 752.0
+      },
+      "rotation": 90,
+      "cropbox": [
+        24.0,
+        24.0,
+        776.0,
+        576.0
+      ],
+      "manual_markers": [
+        {
+          "id": "p1_ot_1",
+          "item_code": "OUTLET",
+          "item_name": "콘센트",
+          "x": 100.0,
+          "y": 150.0,
+          "unit": "EA"
+        },
+        {
+          "id": "p1_ot_2",
+          "item_code": "OUTLET",
+          "item_name": "콘센트",
+          "x": 400.0,
+          "y": 500.0,
+          "unit": "EA"
+        }
+      ]
+    }
+  ],
+  "expected_summary": {
+    "total_quantity": 5,
+    "is_provisional": true,
+    "items": {
+      "LIGHT": {
+        "quantity": 3,
+        "unit": "EA"
+      },
+      "OUTLET": {
+        "quantity": 2,
+        "unit": "EA"
+      }
+    }
+  }
+}

@@ -10,6 +10,8 @@ dependencies = [
     "python-multipart>=0.0.20",
     "openpyxl>=3.1.5",
     "pillow>=12.3.0",
+    "pypdfium2>=5.14.0",
+    "pypdf>=6.20.1",
 ]
 
 [tool.uv.sources]

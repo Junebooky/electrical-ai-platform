@@ -268,6 +268,11 @@ export function TakeoffTable({
                   <div className="flex items-center justify-between text-[11px] text-slate-400 mt-1">
                     <span>
                       품목: <b className="text-slate-200">{ev.mapped_item_code}</b>
+                      {ev.page_index !== undefined && ev.page_index !== null && (
+                        <span className="ml-1.5 px-1 py-0.2 bg-sky-950 text-sky-400 border border-sky-800 rounded text-[9px] font-mono">
+                          P.{ev.page_index + 1}
+                        </span>
+                      )}
                     </span>
                     <span className="font-mono text-[10px]">
                       ({ev.x}, {ev.y})

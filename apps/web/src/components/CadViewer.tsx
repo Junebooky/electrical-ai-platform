@@ -11,6 +11,7 @@ export interface ManualMarker {
   item_code: string;
   item_name?: string | null;
   note?: string;
+  page_index?: number;
 }
 
 interface CadViewerProps {
@@ -24,6 +25,7 @@ interface CadViewerProps {
   onOutOfBoundsClick?: (x: number, y: number, maxX: number, maxY: number) => void;
   manualMarkers?: ManualMarker[];
   imageUrl?: string | null;
+  currentPageIndex?: number;
 }
 
 export function CadViewer({
@@ -37,12 +39,24 @@ export function CadViewer({
   onOutOfBoundsClick,
   manualMarkers = [],
   imageUrl,
+  currentPageIndex = 0,
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const isImage = drawing.source_type === "IMAGE" || drawing.dxf?.units_name === "PIXEL";
-  const imgWidth = drawing.dimensions?.width || (drawing.extents ? drawing.extents.max[0] : 1000);
-  const imgHeight = drawing.dimensions?.height || (drawing.extents ? drawing.extents.max[1] : 800);
+  const isPdf = drawing.source_type === "PDF" || drawing.coordinate_space === "PDF_PAGE_POINT" || drawing.dxf?.units_name === "POINT";
+  const isTopLeftOrigin = isImage || isPdf;
+
+  const activePage = isPdf && drawing.pages && drawing.pages.length > 0
+    ? drawing.pages[currentPageIndex] || drawing.pages[0]
+    : undefined;
+
+  const pageWidth = isPdf
+    ? (activePage?.display_width_pt || drawing.dimensions?.width || 595.28)
+    : (drawing.dimensions?.width || (drawing.extents ? drawing.extents.max[0] : 1000));
+  const pageHeight = isPdf
+    ? (activePage?.display_height_pt || drawing.dimensions?.height || 841.89)
+    : (drawing.dimensions?.height || (drawing.extents ? drawing.extents.max[1] : 800));
 
   // Viewport transform state: [scale, tx, ty]
   const [scale, setScale] = useState(1);
@@ -53,12 +67,12 @@ export function CadViewer({
 
   // Compute extents
   const extents = useMemo(() => {
-    if (isImage) {
-      return { min: [0, 0] as [number, number], max: [imgWidth, imgHeight] as [number, number] };
+    if (isTopLeftOrigin) {
+      return { min: [0, 0] as [number, number], max: [pageWidth, pageHeight] as [number, number] };
     }
     if (drawing.extents) return drawing.extents;
     return { min: [0, 0] as [number, number], max: [1000, 1000] as [number, number] };
-  }, [drawing.extents, isImage, imgWidth, imgHeight]);
+  }, [drawing.extents, isTopLeftOrigin, pageWidth, pageHeight]);
 
   const fitToScreen = useCallback(() => {
     if (!containerRef.current) return;
@@ -80,7 +94,7 @@ export function CadViewer({
     const cy = (minY + maxY) / 2;
 
     setScale(s);
-    if (isImage) {
+    if (isTopLeftOrigin) {
       setPan({
         x: w / 2 - cx * s,
         y: h / 2 - cy * s,
@@ -91,7 +105,7 @@ export function CadViewer({
         y: h / 2 + cy * s,
       });
     }
-  }, [extents, isImage]);
+  }, [extents, isTopLeftOrigin]);
 
   useEffect(() => {
     fitToScreen();
@@ -110,10 +124,10 @@ export function CadViewer({
 
     // Zoom centered on cursor
     const worldX = (mouseX - pan.x) / scale;
-    const worldY = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+    const worldY = isTopLeftOrigin ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
 
     const newPanX = mouseX - worldX * newScale;
-    const newPanY = isImage ? mouseY - worldY * newScale : mouseY + worldY * newScale;
+    const newPanY = isTopLeftOrigin ? mouseY - worldY * newScale : mouseY + worldY * newScale;
 
     setScale(newScale);
     setPan({ x: newPanX, y: newPanY });
@@ -140,7 +154,7 @@ export function CadViewer({
     const mouseY = e.clientY - rect.top;
 
     const wx = (mouseX - pan.x) / scale;
-    const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+    const wy = isTopLeftOrigin ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
     setMouseWorld({
       x: isImage ? Math.floor(wx) : Math.round(wx * 100) / 100,
       y: isImage ? Math.floor(wy) : Math.round(wy * 100) / 100,
@@ -170,15 +184,28 @@ export function CadViewer({
           const mouseX = e.clientX - rect.left;
           const mouseY = e.clientY - rect.top;
           const wx = (mouseX - pan.x) / scale;
-          const wy = isImage ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+          const wy = isTopLeftOrigin ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
 
           if (isImage) {
             // Integer pixel index contract: [0, imgWidth) x [0, imgHeight) via Math.floor
             const targetX = Math.floor(wx);
             const targetY = Math.floor(wy);
 
-            if (targetX < 0 || targetX >= imgWidth || targetY < 0 || targetY >= imgHeight) {
-              onOutOfBoundsClick?.(wx, wy, imgWidth, imgHeight);
+            if (targetX < 0 || targetX >= pageWidth || targetY < 0 || targetY >= pageHeight) {
+              onOutOfBoundsClick?.(wx, wy, pageWidth, pageHeight);
+              setIsDragging(false);
+              dragStartPos.current = null;
+              return;
+            }
+
+            onAddManualPoint(targetX, targetY);
+          } else if (isPdf) {
+            // Canonical pt point: [0, display_width_pt) x [0, display_height_pt) rounded to 2 decimals
+            const targetX = Math.round(wx * 100) / 100;
+            const targetY = Math.round(wy * 100) / 100;
+
+            if (targetX < 0 || targetX >= pageWidth || targetY < 0 || targetY >= pageHeight) {
+              onOutOfBoundsClick?.(wx, wy, pageWidth, pageHeight);
               setIsDragging(false);
               dragStartPos.current = null;
               return;
@@ -276,16 +303,30 @@ export function CadViewer({
       {/* Coordinate & Unit status overlay at bottom */}
       <div className="absolute bottom-3 left-4 z-20 flex items-center gap-4 text-xs font-mono text-slate-400 bg-slate-900/80 px-3 py-1.5 rounded border border-slate-800 pointer-events-none">
         <span>
-          X: <b className="text-slate-200">{mouseWorld.x}</b>{isImage ? " px" : ""}
+          X: <b className="text-slate-200">{mouseWorld.x}</b>{isImage ? " px" : isPdf ? " pt" : ""}
         </span>
         <span>
-          Y: <b className="text-slate-200">{mouseWorld.y}</b>{isImage ? " px" : ""}
+          Y: <b className="text-slate-200">{mouseWorld.y}</b>{isImage ? " px" : isPdf ? " pt" : ""}
         </span>
         <span className="text-slate-500">|</span>
-        <span>{isImage ? "IMAGE (픽셀 좌표계)" : drawing.dxf.units_name}</span>
-        {isImage && isAddManualMode && (
-          <span className={mouseWorld.x < 0 || mouseWorld.x >= imgWidth || mouseWorld.y < 0 || mouseWorld.y >= imgHeight ? "text-amber-400 font-semibold" : "text-emerald-400 font-semibold"}>
-            {mouseWorld.x < 0 || mouseWorld.x >= imgWidth || mouseWorld.y < 0 || mouseWorld.y >= imgHeight ? "⚠ 도면 영역 밖 (추가 불가)" : "✓ 도면 내부"}
+        <span>
+          {isPdf
+            ? `PDF (페이지 좌표계 pt) [P.${(currentPageIndex ?? 0) + 1}/${drawing.page_count || 1}]`
+            : isImage
+            ? "IMAGE (픽셀 좌표계)"
+            : drawing.dxf.units_name}
+        </span>
+        {isTopLeftOrigin && isAddManualMode && (
+          <span
+            className={
+              mouseWorld.x < 0 || mouseWorld.x >= pageWidth || mouseWorld.y < 0 || mouseWorld.y >= pageHeight
+                ? "text-amber-400 font-semibold"
+                : "text-emerald-400 font-semibold"
+            }
+          >
+            {mouseWorld.x < 0 || mouseWorld.x >= pageWidth || mouseWorld.y < 0 || mouseWorld.y >= pageHeight
+              ? "⚠ 도면 영역 밖 (추가 불가)"
+              : "✓ 도면 내부"}
           </span>
         )}
       </div>
@@ -296,21 +337,21 @@ export function CadViewer({
         xmlns="http://www.w3.org/2000/svg"
       >
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale})`}>
-          {/* Render Raster Image if Image Drawing */}
-          {isImage && imageUrl && (
+          {/* Render Raster Image if Image or PDF Drawing */}
+          {isTopLeftOrigin && imageUrl && (
             <image
               href={imageUrl}
               x={0}
               y={0}
-              width={imgWidth}
-              height={imgHeight}
+              width={pageWidth}
+              height={pageHeight}
               preserveAspectRatio="none"
               className="pointer-events-none select-none"
             />
           )}
 
           {/* Render Vector Primitives (CAD lines, polylines) */}
-          {!isImage &&
+          {!isTopLeftOrigin &&
             visiblePrimitives.map((prim, idx) => {
               if (prim.kind === "polyline") {
                 if (prim.points.length === 0) return null;
@@ -441,11 +482,13 @@ export function CadViewer({
             })}
 
           {/* Interactive Manual Markers (Manually Added Objects) */}
-          {manualMarkers.map((m) => {
-            const isSelected = m.id === selectedObjectId;
-            const isHighlighted = highlightedSet.has(m.id);
-            const mRadius = 16 / Math.max(scale, 1e-6);
-            const markerY = isImage ? m.y : -m.y;
+          {manualMarkers
+            .filter((m) => (!isPdf ? true : (m.page_index ?? 0) === (currentPageIndex ?? 0)))
+            .map((m) => {
+              const isSelected = m.id === selectedObjectId;
+              const isHighlighted = highlightedSet.has(m.id);
+              const mRadius = 16 / Math.max(scale, 1e-6);
+              const markerY = isTopLeftOrigin ? m.y : -m.y;
 
             return (
               <g

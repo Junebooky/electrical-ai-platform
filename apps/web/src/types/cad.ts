@@ -88,6 +88,17 @@ export interface Primitive {
   rotation_deg?: number | null;
 }
 
+export interface PdfPageInfo {
+  page_index: number;
+  display_width_pt: number;
+  display_height_pt: number;
+  rotation: number;
+  cropbox?: number[];
+  mediabox?: number[];
+  rendered_width_px?: number;
+  rendered_height_px?: number;
+}
+
 export interface NormalizedDrawing {
   schema_version: string;
   drawing_id: string;
@@ -123,6 +134,8 @@ export interface NormalizedDrawing {
   file_type?: string;
   coordinate_space?: string;
   dimensions?: { width: number; height: number };
+  page_count?: number;
+  pages?: PdfPageInfo[];
 }
 
 export interface ItemMappingRule {
@@ -153,6 +166,7 @@ export interface ManualObjectItem {
   unit: string;
   note: string;
   created_at?: string;
+  page_index?: number;
 }
 
 export interface TakeoffSummaryRow {
@@ -166,6 +180,7 @@ export interface TakeoffSummaryRow {
   drawing_name: string;
   drawing_revision: string;
   notes: string;
+  is_provisional?: boolean;
 }
 
 export interface TakeoffEvidenceRow {
@@ -181,6 +196,10 @@ export interface TakeoffEvidenceRow {
   inclusion_status: "INCLUDED" | "EXCLUDED" | "MANUAL_ADDED";
   review_status: "UNREVIEWED" | "REVIEWED" | "UNRESOLVED";
   review_reason: string;
+  page_index?: number | null;
+  source_type?: string | null;
+  file_type?: string | null;
+  coordinate_space?: string | null;
 }
 
 export interface TakeoffResult {
@@ -219,5 +238,7 @@ export interface DrawingSummary {
   file_type?: string;
   coordinate_space?: string;
   dimensions?: { width: number; height: number };
+  page_count?: number;
+  pages?: PdfPageInfo[];
 }
 

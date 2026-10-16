@@ -26,6 +26,13 @@ from .models import (
     ProjectMetadata,
     TakeoffResult,
 )
+from .pdf_parser import (
+    PdfCorruptError,
+    PdfEncryptedError,
+    PdfPageLimitExceededError,
+    build_pdf_drawing,
+    parse_pdf_document,
+)
 from .storage import Storage
 
 app = FastAPI(
@@ -189,6 +196,52 @@ async def upload_drawing(
             "coordinate_space": "IMAGE_PIXEL",
             "dimensions": {"width": img_meta.width, "height": img_meta.height},
         }
+    elif lower_name.endswith(".pdf") or content.startswith(b"%PDF-"):
+        try:
+            pdf_info = parse_pdf_document(content)
+        except PdfEncryptedError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except PdfPageLimitExceededError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except PdfCorruptError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"PDF 도면 분석 실패: {e}") from e
+
+        drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
+        drawing = build_pdf_drawing(pdf_info, drawing_id, filename)
+        first_p = pdf_info.pages[0] if pdf_info.pages else None
+        pw = int(first_p.display_width_pt) if first_p else 595
+        ph = int(first_p.display_height_pt) if first_p else 842
+
+        storage.save_drawing(
+            project_id,
+            drawing,
+            revision=revision,
+            raw_bytes=content,
+            source_type="PDF",
+            file_type="PDF",
+            coordinate_space="PDF_PAGE_POINT",
+            dimensions={"width": pw, "height": ph},
+            page_count=pdf_info.page_count,
+            pages=[p.to_dict() for p in pdf_info.pages],
+        )
+        return {
+            "project_id": project_id,
+            "drawing_id": drawing.drawing_id,
+            "filename": filename,
+            "revision": revision,
+            "objects_count": 0,
+            "warnings_count": len(drawing.warnings),
+            "raw_saved": True,
+            "file_size_bytes": len(content),
+            "source_type": "PDF",
+            "file_type": "PDF",
+            "coordinate_space": "PDF_PAGE_POINT",
+            "dimensions": {"width": pw, "height": ph},
+            "page_count": pdf_info.page_count,
+            "pages": [p.to_dict() for p in pdf_info.pages],
+        }
     elif lower_name.endswith(".dwg"):
         raise HTTPException(
             status_code=400,
@@ -197,7 +250,7 @@ async def upload_drawing(
     else:
         raise HTTPException(
             status_code=400,
-            detail="지원하지 않는 파일 형식입니다. .dxf, .png, .jpg 파일만 지원됩니다.",
+            detail="지원하지 않는 파일 형식입니다. .dxf, .png, .jpg, .pdf 파일만 지원됩니다.",
         )
 
 
@@ -217,12 +270,43 @@ def get_drawing(project_id: str, drawing_id: str) -> NormalizedDrawing:
     return drawing
 
 
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/pages/{page_index}/image")
+def get_drawing_page_image(project_id: str, drawing_id: str, page_index: int) -> Response:
+    try:
+        image_path = storage.get_drawing_page_image_path(project_id, drawing_id, page_index)
+    except (PdfCorruptError, PdfPageLimitExceededError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except IndexError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    if not image_path or not image_path.exists():
+        raise HTTPException(status_code=404, detail=f"페이지({page_index}) 이미지 파일을 찾을 수 없습니다.")
+    return Response(
+        content=image_path.read_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @app.get("/api/projects/{project_id}/drawings/{drawing_id}/image")
-def get_drawing_image(project_id: str, drawing_id: str) -> Response:
+def get_drawing_image(project_id: str, drawing_id: str, page: int = Query(default=0, ge=0)) -> Response:
+    meta = storage.get_drawing_meta(project_id, drawing_id)
+    if meta and meta.get("source_type") == "PDF":
+        try:
+            image_path = storage.get_drawing_page_image_path(project_id, drawing_id, page)
+        except (PdfCorruptError, PdfPageLimitExceededError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except IndexError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if not image_path or not image_path.exists():
+            raise HTTPException(status_code=404, detail="PDF 도면 페이지 이미지 파일을 찾을 수 없습니다.")
+        return Response(
+            content=image_path.read_bytes(),
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
     image_path = storage.get_drawing_image_path(project_id, drawing_id)
     if not image_path or not image_path.exists():
         raise HTTPException(status_code=404, detail="이미지 도면 파일을 찾을 수 없습니다.")
-    meta = storage.get_drawing_meta(project_id, drawing_id)
     file_type = (meta.get("file_type") if meta else "PNG") or "PNG"
     media_type = "image/png" if file_type.upper() == "PNG" else "image/jpeg"
     return Response(
@@ -245,6 +329,8 @@ def get_raw_drawing(project_id: str, drawing_id: str) -> Response:
         media_type = "image/png"
     elif raw_path.suffix.lower() in (".jpg", ".jpeg"):
         media_type = "image/jpeg"
+    elif raw_path.suffix.lower() == ".pdf":
+        media_type = "application/pdf"
     return Response(
         content=raw_path.read_bytes(),
         media_type=media_type,
@@ -270,8 +356,9 @@ def save_mappings(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
-    # IMG-03: On IMAGE drawings, all mapping units must be strictly 'EA'
+    # IMG-03 & PR B: On IMAGE/PDF drawings, all mapping units must be strictly 'EA'
     is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    is_pdf = getattr(drawing, "source_type", None) == "PDF" or getattr(drawing, "coordinate_space", None) == "PDF_PAGE_POINT"
     if is_image:
         for r in mappings:
             actual_u = (r.unit or "EA").strip()
@@ -279,6 +366,14 @@ def save_mappings(
                 raise HTTPException(
                     status_code=400,
                     detail=f"이미지 도면(IMAGE_PIXEL)의 매핑 단위는 P0 원칙(IMG-03/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
+                )
+    elif is_pdf:
+        for r in mappings:
+            actual_u = (r.unit or "EA").strip()
+            if actual_u != "EA":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF 도면(PDF_PAGE_POINT)의 매핑 단위는 P0 원칙(PR B/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
                 )
 
     try:
@@ -300,23 +395,29 @@ def save_reviews(
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
     is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    is_pdf = getattr(drawing, "source_type", None) == "PDF" or getattr(drawing, "coordinate_space", None) == "PDF_PAGE_POINT"
     mappings = storage.get_mappings(project_id, drawing_id)
     canon_defs = {m.item_code: m for m in mappings if m.item_code not in ("EXCLUDE", "UNMAPPED")}
     manual_objs = {mo.id: mo for mo in storage.get_manual_objects(project_id, drawing_id)}
     cad_objs = {obj.id: obj for obj in drawing.objects if obj.entity_type == "INSERT"}
 
-    # MUNIT-D / IMG-03: Validate unit consistency on review reclassification
+    # MUNIT-D / IMG-03 / PR B: Validate unit consistency on review reclassification
     for r in reviews:
         if not r.mapped_item_code or r.mapped_item_code in ("EXCLUDE", "UNMAPPED"):
             continue
 
         target_unit = (canon_defs[r.mapped_item_code].unit or "EA").strip() if r.mapped_item_code in canon_defs else "EA"
 
-        # IMG-03: On IMAGE drawings, review reclassification to non-EA is strictly forbidden
+        # On IMAGE and PDF drawings, review reclassification to non-EA is strictly forbidden
         if is_image and target_unit != "EA":
             raise HTTPException(
                 status_code=400,
                 detail=f"이미지 도면(IMAGE_PIXEL)의 검수 재분류 단위는 P0 원칙(IMG-03)상 'EA'만 허용됩니다 (대상 단위: '{target_unit}').",
+            )
+        elif is_pdf and target_unit != "EA":
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF 도면(PDF_PAGE_POINT)의 검수 재분류 단위는 P0 원칙(PR B)상 'EA'만 허용됩니다 (대상 단위: '{target_unit}').",
             )
 
         if r.source_object_id in manual_objs:
@@ -355,6 +456,17 @@ def save_reviews(
 
 
 # --------------------------------------------------------------- Manual Objects
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/manual-objects")
+def get_manual_objects(
+    project_id: str,
+    drawing_id: str,
+) -> list[ManualObjectItem]:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    return storage.get_manual_objects(project_id, drawing_id)
+
+
 @app.post("/api/projects/{project_id}/drawings/{drawing_id}/manual-objects")
 def add_manual_object(
     project_id: str,
@@ -374,6 +486,8 @@ def add_manual_object(
 
     # High-2 Defense: Strict coordinate bounds for IMAGE drawings [0, width) and [0, height)
     is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    is_pdf = getattr(drawing, "source_type", None) == "PDF" or getattr(drawing, "coordinate_space", None) == "PDF_PAGE_POINT"
+
     if is_image:
         dims = getattr(drawing, "dimensions", None) or {}
         img_w = float(dims.get("width") or (drawing.extents.max[0] if drawing.extents else 0))
@@ -393,6 +507,36 @@ def add_manual_object(
                     f"반열림 구간 [0, {int(img_w)}) × [0, {int(img_h)}) 내의 좌표만 허용됩니다."
                 ),
             )
+    elif is_pdf:
+        pages_list = getattr(drawing, "pages", None) or []
+        page_cnt = int(getattr(drawing, "page_count", len(pages_list)) or len(pages_list) or 1)
+        if item.page_index < 0 or item.page_index >= page_cnt:
+            raise HTTPException(
+                status_code=400,
+                detail=f"수동 추가 기구의 page_index({item.page_index})가 PDF 도면 페이지 범위([0, {page_cnt}))를 벗어났습니다.",
+            )
+        p_meta = pages_list[item.page_index] if item.page_index < len(pages_list) else None
+        if p_meta:
+            page_w = float(p_meta.get("display_width_pt") or 0.0)
+            page_h = float(p_meta.get("display_height_pt") or 0.0)
+        else:
+            dims = getattr(drawing, "dimensions", None) or {}
+            page_w = float(dims.get("width") or 595.0)
+            page_h = float(dims.get("height") or 842.0)
+
+        if not (math.isfinite(item.x) and math.isfinite(item.y)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"수동 추가 좌표가 유효한 유한수(finite number)가 아닙니다 (x={item.x}, y={item.y}).",
+            )
+        if item.x < 0.0 or item.x >= page_w or item.y < 0.0 or item.y >= page_h:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"수동 추가 기구 좌표(x={item.x}, y={item.y})가 "
+                    f"PDF 도면 페이지({item.page_index})의 pt 유효 범위([0, {page_w:.1f}) × [0, {page_h:.1f}))를 벗어났습니다."
+                ),
+            )
 
     # ADR-005 / MUNIT-E: Validate non-empty unit
     actual_unit = (item.unit or "").strip()
@@ -402,12 +546,20 @@ def add_manual_object(
             detail="수동 추가 기구의 단위(unit)가 누락되었거나 공백입니다. 유효한 단위(예: 'EA', 'SET' 등)를 지정해야 합니다 (ADR-005).",
         )
 
-    # IMG-03: On IMAGE drawings, manual objects MUST strictly have unit == "EA" (mapping-bypass prohibited)
+    # IMG-03 & PR B: On IMAGE and PDF drawings, manual objects MUST strictly have unit == "EA" (mapping-bypass prohibited)
     if is_image and actual_unit != "EA":
         raise HTTPException(
             status_code=400,
             detail=(
                 f"이미지 도면(IMAGE_PIXEL)의 수동 추가 기구는 P0 원칙(IMG-03/M-UNIT-01)상 'EA' 단위만 허용됩니다 "
+                f"(품목: '{item.item_code}', 요청 단위: '{item.unit}')."
+            ),
+        )
+    elif is_pdf and actual_unit != "EA":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PDF 도면(PDF_PAGE_POINT)의 수동 추가 기구는 P0 원칙(PR B/M-UNIT-01)상 'EA' 단위만 허용됩니다 "
                 f"(품목: '{item.item_code}', 요청 단위: '{item.unit}')."
             ),
         )
@@ -435,6 +587,26 @@ def add_manual_object(
                     f"매핑되지 않은 수동 전용 품목('{item.item_code}')은 P0 정책(M-UNIT-01)상 'EA' 단위만 허용됩니다 "
                     f"(요청 단위: '{item.unit}')."
                 ),
+            )
+
+    # P0-02 (DOMAIN): Duplicate ID defense (idempotent replay on identical payload, 409 Conflict on mismatch)
+    existing = next((o for o in objs if o.id == item.id), None)
+    if existing is not None:
+        is_identical = (
+            math.isclose(existing.x, item.x, abs_tol=1e-5)
+            and math.isclose(existing.y, item.y, abs_tol=1e-5)
+            and existing.item_code == item.item_code
+            and (existing.item_name or "") == (item.item_name or "")
+            and existing.unit == item.unit
+            and existing.drawing_id == item.drawing_id
+            and getattr(existing, "page_index", None) == getattr(item, "page_index", None)
+        )
+        if is_identical:
+            return existing
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"수동 기구 ID '{item.id}'가 이미 다른 속성으로 등록되어 있습니다 (중복 충돌).",
             )
 
     objs.append(item)

@@ -120,6 +120,14 @@ export const api = {
     return handleResponse(res);
   },
 
+  getManualObjects: async (
+    projectId: string,
+    drawingId: string
+  ): Promise<ManualObjectItem[]> => {
+    const res = await fetch(`${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/manual-objects`);
+    return handleResponse(res);
+  },
+
   addManualObject: async (
     projectId: string,
     drawingId: string,
@@ -162,6 +170,10 @@ export const api = {
 
   getImageUrl: (projectId: string, drawingId: string): string => {
     return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/image`;
+  },
+
+  getPageImageUrl: (projectId: string, drawingId: string, pageIndex: number): string => {
+    return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/pages/${pageIndex}/image`;
   },
 
   getRawUrl: (projectId: string, drawingId: string): string => {
