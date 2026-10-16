@@ -50,7 +50,7 @@ from .pdf_parser import (
     parse_pdf_document,
 )
 from .storage import Storage
-from .visual_search import search_visual_symbols
+from .visual_search import merge_candidates_spatial, search_visual_symbols
 
 app = FastAPI(
     title="Electrical AI Platform API",
@@ -745,9 +745,10 @@ def search_symbol(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"기호 시각적 검색 중 오류 발생: {e}") from e
 
-    # Persist newly found visual candidates, merging with existing candidates
+    # Persist newly found visual candidates, merging with existing candidates spatially (P0-02)
     existing = storage.get_candidates(project_id, drawing_id)
-    storage.save_candidates(project_id, drawing_id, existing + new_candidates)
+    merged = merge_candidates_spatial(existing, new_candidates)
+    storage.save_candidates(project_id, drawing_id, merged)
 
     return SymbolSearchResponse(
         drawing_id=drawing_id,

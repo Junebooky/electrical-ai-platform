@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import io
 import math
-import uuid
 from typing import Any
 
 import cv2
 import numpy as np
 from PIL import Image
 
+from .detector import get_dxf_structural_block_reason
 from .models import (
     CandidateStatus,
     DetectionSource,
@@ -48,10 +48,17 @@ def non_max_suppression_boxes(
     if not boxes:
         return []
     try:
-        boxes_arr = np.array(boxes, dtype=np.float32)
+        # OpenCV cv2.dnn.NMSBoxes expects boxes in [x, y, width, height] format
+        xywh_boxes: list[list[float]] = []
+        for b in boxes:
+            bx1, by1, bx2, by2 = b[0], b[1], b[2], b[3]
+            w = max(0.0, bx2 - bx1)
+            h = max(0.0, by2 - by1)
+            xywh_boxes.append([float(bx1), float(by1), float(w), float(h)])
+
         scores_arr = np.array(scores, dtype=np.float32)
         indices = cv2.dnn.NMSBoxes(
-            boxes_arr.tolist(),
+            xywh_boxes,
             scores_arr.tolist(),
             score_threshold=0.0,
             nms_threshold=overlap_thresh,
@@ -64,21 +71,21 @@ def non_max_suppression_boxes(
     except Exception:
         # Fallback greedy NMS
         pick = []
-        x1 = np.array([b[0] for b in boxes])
-        y1 = np.array([b[1] for b in boxes])
-        x2 = np.array([b[2] for b in boxes])
-        y2 = np.array([b[3] for b in boxes])
+        arr_x1 = np.array([b[0] for b in boxes])
+        arr_y1 = np.array([b[1] for b in boxes])
+        arr_x2 = np.array([b[2] for b in boxes])
+        arr_y2 = np.array([b[3] for b in boxes])
         s = np.array(scores)
-        area = (x2 - x1) * (y2 - y1)
+        area = (arr_x2 - arr_x1) * (arr_y2 - arr_y1)
         order = s.argsort()[::-1]
 
         while order.size > 0:
             i = order[0]
             pick.append(int(i))
-            xx1 = np.maximum(x1[i], x1[order[1:]])
-            yy1 = np.maximum(y1[i], y1[order[1:]])
-            xx2 = np.minimum(x2[i], x2[order[1:]])
-            yy2 = np.minimum(y2[i], y2[order[1:]])
+            xx1 = np.maximum(arr_x1[i], arr_x1[order[1:]])
+            yy1 = np.maximum(arr_y1[i], arr_y1[order[1:]])
+            xx2 = np.minimum(arr_x2[i], arr_x2[order[1:]])
+            yy2 = np.minimum(arr_y2[i], arr_y2[order[1:]])
             w = np.maximum(0.0, xx2 - xx1)
             h = np.maximum(0.0, yy2 - yy1)
             inter = w * h
@@ -86,6 +93,122 @@ def non_max_suppression_boxes(
             inds = np.where(iou <= overlap_thresh)[0]
             order = order[inds + 1]
         return pick
+
+
+def are_candidates_spatially_coincident(
+    c1: SymbolCandidate,
+    c2: SymbolCandidate,
+    iou_thresh: float = 0.40,
+    dist_thresh: float = 15.0,
+) -> bool:
+    """Check if two symbol candidates represent the exact same physical installation location (P0-02).
+
+    Invariants:
+    1. Drawing ID and page_index must strictly match (different PDF pages are NEVER coincident).
+    2. If both candidates link to a CAD source_object_id, compare that ID.
+    3. If bboxes exist, evaluate Bounding Box IoU >= iou_thresh.
+    4. Otherwise evaluate Euclidean center distance <= max(dist_thresh, min(w, h) * 0.5).
+    """
+    if c1.drawing_id != c2.drawing_id:
+        return False
+    if getattr(c1, "page_index", 0) != getattr(c2, "page_index", 0):
+        return False
+
+    sid1 = c1.raw_evidence.get("source_object_id") if c1.raw_evidence else None
+    sid2 = c2.raw_evidence.get("source_object_id") if c2.raw_evidence else None
+    if sid1 is not None and sid2 is not None:
+        return str(sid1) == str(sid2)
+
+    b1 = getattr(c1, "bbox", None)
+    b2 = getattr(c2, "bbox", None)
+    if b1 and b2 and len(b1) == 4 and len(b2) == 4:
+        x1 = max(min(b1[0], b1[2]), min(b2[0], b2[2]))
+        y1 = max(min(b1[1], b1[3]), min(b2[1], b2[3]))
+        x2 = min(max(b1[0], b1[2]), max(b2[0], b2[2]))
+        y2 = min(max(b1[1], b1[3]), max(b2[1], b2[3]))
+        inter_w = max(0.0, x2 - x1)
+        inter_h = max(0.0, y2 - y1)
+        inter = inter_w * inter_h
+        area1 = abs((b1[2] - b1[0]) * (b1[3] - b1[1]))
+        area2 = abs((b2[2] - b2[0]) * (b2[3] - b2[1]))
+        union = area1 + area2 - inter
+        if union > 0 and (inter / union) >= iou_thresh:
+            return True
+
+    # Center distance comparison
+    dist = math.hypot(c1.x - c2.x, c1.y - c2.y)
+    eff_thresh = dist_thresh
+    if b1 and len(b1) == 4:
+        bw = abs(b1[2] - b1[0])
+        bh = abs(b1[3] - b1[1])
+        eff_thresh = max(dist_thresh, min(bw, bh) * 0.5)
+
+    return dist <= eff_thresh
+
+
+def merge_candidates_spatial(
+    existing: list[SymbolCandidate],
+    incoming: list[SymbolCandidate],
+) -> list[SymbolCandidate]:
+    """Merge incoming candidates with existing candidates, enforcing single-candidate per physical position.
+
+    Crucial Invariants (P0-02):
+    1. A single physical location NEVER produces multiple candidates.
+    2. User-reviewed decisions (ACCEPTED or REJECTED) on existing candidates are strictly preserved.
+    3. Different PDF pages remain distinct even if coordinates are identical.
+    """
+    merged: list[SymbolCandidate] = list(existing)
+
+    for new_c in incoming:
+        match_idx: int | None = None
+        for idx, ex_c in enumerate(merged):
+            if are_candidates_spatially_coincident(ex_c, new_c):
+                match_idx = idx
+                break
+
+        if match_idx is not None:
+            ex_c = merged[match_idx]
+
+            # Preserve user review state if already reviewed
+            final_status: CandidateStatus
+            if ex_c.status in (CandidateStatus.ACCEPTED, CandidateStatus.REJECTED):
+                final_status = ex_c.status
+                final_reviewed_code = ex_c.reviewed_item_code
+                final_review_note = ex_c.review_note or ""
+            elif new_c.status in (CandidateStatus.ACCEPTED, CandidateStatus.REJECTED):
+                final_status = new_c.status
+                final_reviewed_code = new_c.reviewed_item_code
+                final_review_note = new_c.review_note or ""
+            else:
+                final_status = CandidateStatus.PROPOSED
+                final_reviewed_code = None
+                final_review_note = ""
+
+            merged_evidence = dict(ex_c.raw_evidence or {})
+            merged_evidence.update(new_c.raw_evidence or {})
+
+            updated = SymbolCandidate(
+                candidate_id=ex_c.candidate_id,
+                drawing_id=ex_c.drawing_id,
+                page_index=ex_c.page_index,
+                coordinate_space=ex_c.coordinate_space,
+                x=ex_c.x if ex_c.status != CandidateStatus.PROPOSED else round((ex_c.x + new_c.x) / 2.0, 2),
+                y=ex_c.y if ex_c.status != CandidateStatus.PROPOSED else round((ex_c.y + new_c.y) / 2.0, 2),
+                bbox=new_c.bbox or ex_c.bbox,
+                suggested_item_code=new_c.suggested_item_code or ex_c.suggested_item_code,
+                suggested_item_name=new_c.suggested_item_name or ex_c.suggested_item_name,
+                reviewed_item_code=final_reviewed_code,
+                confidence=max(ex_c.confidence, new_c.confidence),
+                detection_source=new_c.detection_source or ex_c.detection_source,
+                status=final_status,
+                review_note=final_review_note,
+                raw_evidence=merged_evidence,
+            )
+            merged[match_idx] = updated
+        else:
+            merged.append(new_c)
+
+    return merged
 
 
 def match_template_multi_rotation(
@@ -227,13 +350,13 @@ def search_visual_symbols_image(
     )
 
     candidates: list[SymbolCandidate] = []
-    for idx, m in enumerate(matches):
+    for m in matches:
         b = m["bbox"]
         cx, cy = m["center"]
         score = float(m["score"])
         rot = float(m["rotation"])
         cand = SymbolCandidate(
-            candidate_id=f"cand_vis_{drawing_id}_{idx + 1}_{uuid.uuid4().hex[:4]}",
+            candidate_id=f"cand_vis_img_{drawing_id}_{round(cx)}_{round(cy)}",
             drawing_id=drawing_id,
             page_index=0,
             coordinate_space="IMAGE_PIXEL",
@@ -339,7 +462,7 @@ def search_visual_symbols_pdf(
             cy_pt = round(cy_px / render_scale, 2)
 
             cand = SymbolCandidate(
-                candidate_id=f"cand_vis_p{p_idx}_{drawing_id}_{len(candidates) + 1}_{uuid.uuid4().hex[:4]}",
+                candidate_id=f"cand_vis_pdf_p{p_idx}_{drawing_id}_{round(cx_pt)}_{round(cy_pt)}",
                 drawing_id=drawing_id,
                 page_index=p_idx,
                 coordinate_space="PDF_PAGE_POINT",
@@ -379,6 +502,7 @@ def search_visual_symbols_dxf(
 
     objects = getattr(drawing, "objects", []) or []
     insert_objs = [o for o in objects if getattr(o, "entity_type", "") == "INSERT"]
+    parent_ids = {o.parent_id for o in insert_objs if getattr(o, "parent_id", None) is not None}
 
     # 1. Find overlapping blocks in the sample bbox
     matched_block_names: set[str] = set()
@@ -396,11 +520,22 @@ def search_visual_symbols_dxf(
         for idx, o in enumerate(insert_objs):
             bname = getattr(o, "block_name", "")
             if bname in matched_block_names:
+                obj_id = str(getattr(o, "id", f"ins_{idx}"))
+                struct_reason = get_dxf_structural_block_reason(o, parent_ids)
+                is_blocked = struct_reason is not None
+
                 pt = getattr(o, "insert_point", None)
                 ox = float(pt[0]) if pt else 0.0
                 oy = float(pt[1]) if pt else 0.0
+
+                item_label = (
+                    f"{suggested_item_name} (검수불가: {struct_reason})"
+                    if is_blocked
+                    else suggested_item_name
+                )
+
                 cand = SymbolCandidate(
-                    candidate_id=f"cand_vis_dxf_{drawing_id}_{idx + 1}_{uuid.uuid4().hex[:4]}",
+                    candidate_id=f"cand_vis_dxf_{drawing_id}_{obj_id}",
                     drawing_id=drawing_id,
                     page_index=0,
                     coordinate_space="WORLD",
@@ -408,13 +543,17 @@ def search_visual_symbols_dxf(
                     y=round(oy, 2),
                     bbox=[round(ox - 15.0, 2), round(oy - 15.0, 2), round(ox + 15.0, 2), round(oy + 15.0, 2)],
                     suggested_item_code=suggested_item_code,
-                    suggested_item_name=suggested_item_name,
-                    confidence=0.95,
+                    suggested_item_name=item_label,
+                    confidence=0.0 if is_blocked else 0.95,
                     detection_source=DetectionSource.VISUAL_TEMPLATE.value,
                     status=CandidateStatus.PROPOSED,
                     raw_evidence={
-                        "method": "DXF_BLOCK_GEOMETRY",
+                        "source_object_id": obj_id,
                         "block_name": bname,
+                        "layer": getattr(o, "layer", "") or "",
+                        "is_structurally_blocked": is_blocked,
+                        "structural_block_reason": struct_reason,
+                        "method": "DXF_BLOCK_GEOMETRY",
                         "sample_bbox": [round(xmin, 2), round(ymin, 2), round(xmax, 2), round(ymax, 2)],
                     },
                 )

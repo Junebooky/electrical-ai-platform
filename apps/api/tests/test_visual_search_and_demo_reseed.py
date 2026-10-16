@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from pathlib import Path
 
+import openpyxl
 import pytest
 from eai_api.app import app
-from eai_api.models import CandidateBulkReviewRequest, CandidateReviewUpdate, CandidateStatus
+from eai_api.models import (
+    CandidateBulkReviewRequest,
+    CandidateReviewUpdate,
+    CandidateStatus,
+    ItemMappingRule,
+    SymbolCandidate,
+)
 from eai_api.storage import Storage
 from fastapi.testclient import TestClient
 
@@ -219,3 +228,252 @@ def test_visual_search_validation_errors(client: TestClient) -> None:
         json={"sample_bbox": [10.0, 10.0, 50.0, 50.0]},
     )
     assert not_found.status_code == 404
+
+
+def test_p0_01_dxf_visual_search_no_double_counting_and_structural_blocking(client: TestClient) -> None:
+    """Verify P0-01: DXF visual search candidates do NOT duplicate EA of mapped CAD blocks,
+
+    and structurally blocked blocks fail-closed to 0 EA even if candidate is accepted.
+    """
+    from eai_api import app as app_module
+
+    p_resp = client.post("/api/projects", json={"name": "P0-01 DXF Dedupe and Structural Block Test"})
+    proj_id = p_resp.json()["id"]
+
+    dxf_bytes = DXF_FIXTURE_PATH.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("basic_devices.dxf", dxf_bytes, "application/dxf")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # 1. Map LT-DL to LIGHT (6 EA in basic_devices.dxf)
+    rules = [
+        ItemMappingRule(
+            block_name="LT-DL",
+            item_code="LIGHT",
+            item_name="조명기구",
+            unit="EA",
+            specification="LED 50W",
+        ).model_dump(mode="json")
+    ]
+    map_resp = client.put(f"/api/projects/{proj_id}/drawings/{dwg_id}/mappings", json=rules)
+    assert map_resp.status_code == 200
+
+    # Baseline takeoff before visual search: exactly 6 EA
+    t0_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    assert t0_resp.status_code == 200
+    t0_data = t0_resp.json()
+    light_row_0 = next(r for r in t0_data["summary"] if r["item_code"] == "LIGHT")
+    assert light_row_0["quantity"] == 6
+
+    # 2. Execute visual search on the LT-DL block
+    search_req = {
+        "sample_bbox": [950.0, 1950.0, 1050.0, 2050.0],
+        "suggested_item_code": "LIGHT",
+        "suggested_item_name": "조명기구",
+    }
+    s_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/search-symbol", json=search_req)
+    assert s_resp.status_code == 200
+    candidates = s_resp.json()["candidates"]
+    assert len(candidates) == 6
+
+    # 3. Bulk Accept all 6 visual candidates
+    bulk_updates = [
+        CandidateReviewUpdate(candidate_id=c["candidate_id"], status=CandidateStatus.ACCEPTED)
+        for c in candidates
+    ]
+    rev_resp = client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json=CandidateBulkReviewRequest(updates=bulk_updates).model_dump(mode="json"),
+    )
+    assert rev_resp.status_code == 200
+
+    # 4. Critical P0-01 Assertion: Takeoff MUST STILL BE EXACTLY 6 EA, NOT 12 EA!
+    t1_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    assert t1_resp.status_code == 200
+    t1_data = t1_resp.json()
+    light_row_1 = next(r for r in t1_data["summary"] if r["item_code"] == "LIGHT")
+    assert light_row_1["quantity"] == 6, f"Expected strictly 6 EA for LIGHT, got {light_row_1['quantity']} EA (double counting detected!)"
+
+    # Evidence rows for LIGHT must be strictly 6 CAD insert rows
+    light_evidence = [r for r in t1_data["evidence"] if r["mapped_item_code"] == "LIGHT" and r["inclusion_status"] in ("INCLUDED", "MANUAL_ADDED")]
+    assert len(light_evidence) == 6, f"Expected strictly 6 included evidence rows, got {len(light_evidence)}"
+    assert all(r["entity_type"] == "INSERT" for r in light_evidence), "Candidate rows must NOT duplicate mapped CAD INSERT rows"
+
+    # 5. CSV Summary Assertion
+    csv_sum_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/csv?type=summary")
+    assert csv_sum_resp.status_code == 200
+    csv_sum_reader = list(csv.reader(io.StringIO(csv_sum_resp.content.decode("utf-8-sig"))))
+    sum_headers = csv_sum_reader[0]
+    code_idx = sum_headers.index("item_code")
+    qty_idx = sum_headers.index("quantity")
+    light_csv_row = next(r for r in csv_sum_reader[1:] if r[code_idx] == "LIGHT")
+    assert int(light_csv_row[qty_idx]) == 6, f"CSV Summary quantity must be strictly 6, got {light_csv_row[qty_idx]}"
+
+    # 6. CSV Evidence Assertion
+    csv_ev_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/csv?type=evidence")
+    assert csv_ev_resp.status_code == 200
+    csv_ev_reader = list(csv.reader(io.StringIO(csv_ev_resp.content.decode("utf-8-sig"))))
+    ev_headers = csv_ev_reader[0]
+    ev_code_idx = ev_headers.index("mapped_item_code")
+    ev_inc_idx = ev_headers.index("inclusion_status")
+    light_ev_csv_rows = [r for r in csv_ev_reader[1:] if r[ev_code_idx] == "LIGHT" and r[ev_inc_idx] == "INCLUDED"]
+    assert len(light_ev_csv_rows) == 6, f"CSV Evidence count must be strictly 6, got {len(light_ev_csv_rows)}"
+
+    # 7. Excel Openpyxl Actual Cell Value Assertion
+    xlsx_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/xlsx")
+    assert xlsx_resp.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
+    assert "Takeoff Summary" in wb.sheetnames
+    ws_sum = wb["Takeoff Summary"]
+    headers = [str(cell.value) for cell in ws_sum[1]]
+    code_col = next(i + 1 for i, h in enumerate(headers) if "item_code" in h)
+    qty_col = next(i + 1 for i, h in enumerate(headers) if "quantity" in h)
+
+    found_xlsx_light = False
+    for row in range(2, ws_sum.max_row + 1):
+        code_val = ws_sum.cell(row=row, column=code_col).value
+        qty_val = ws_sum.cell(row=row, column=qty_col).value
+        if code_val == "LIGHT":
+            assert int(qty_val) == 6, f"Excel Summary cell value must be strictly 6, got {qty_val}"
+            found_xlsx_light = True
+            break
+    assert found_xlsx_light, "LIGHT row not found in XLSX Takeoff Summary"
+
+    # 8. Structural Block Fail-Closed Verification (P0-01)
+    # Inject a structurally blocked candidate on this drawing and accept it
+    blocked_cand = SymbolCandidate(
+        candidate_id=f"cand_blocked_dxf_{dwg_id}_1",
+        drawing_id=dwg_id,
+        page_index=0,
+        coordinate_space="WORLD",
+        x=500.0,
+        y=500.0,
+        bbox=[485.0, 485.0, 515.0, 515.0],
+        suggested_item_code="PANEL",
+        suggested_item_name="분전반 (검수불가: 동적/익명 블록)",
+        confidence=0.0,
+        detection_source="DXF_BLOCK",
+        status=CandidateStatus.ACCEPTED,
+        raw_evidence={
+            "is_structurally_blocked": True,
+            "structural_block_reason": "동적/익명 블록: 가시성·구조 검수 필요",
+        },
+    )
+    existing_cands = app_module.storage.get_candidates(proj_id, dwg_id)
+    app_module.storage.save_candidates(proj_id, dwg_id, [*existing_cands, blocked_cand])
+
+    # Recompute takeoff: structurally blocked candidate MUST NEVER produce quantity (must be 0 EA)
+    t2_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    t2_data = t2_resp.json()
+    panel_rows = [r for r in t2_data["summary"] if r["item_code"] == "PANEL"]
+    assert len(panel_rows) == 0 or panel_rows[0]["quantity"] == 0, "Structurally blocked candidate was illegally revived into positive EA!"
+
+
+def test_p0_02_spatial_deduplication_and_review_preservation(client: TestClient) -> None:
+    """Verify P0-02: Repeated or cross searches on the same physical symbol location
+
+    do NOT produce duplicate candidates or multiply EA, and strictly preserve user review decisions.
+    Different PDF pages remain separate.
+    """
+    from eai_api import app as app_module
+
+    p_resp = client.post("/api/projects", json={"name": "P0-02 Spatial Dedupe Test"})
+    proj_id = p_resp.json()["id"]
+
+    img_bytes = IMAGE_FIXTURE_PATH.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", img_bytes, "image/png")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # 1. Search #1 targeting a light symbol around (250, 250)
+    search_req_1 = {
+        "sample_bbox": [227.0, 227.0, 273.0, 273.0],
+        "suggested_item_code": "LIGHT",
+        "suggested_item_name": "조명기구",
+        "threshold": 0.75,
+    }
+    s1_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/search-symbol", json=search_req_1)
+    assert s1_resp.status_code == 200
+    cands_1 = s1_resp.json()["candidates"]
+    assert len(cands_1) >= 1
+    total_found_1 = len(cands_1)
+
+    # 2. User explicitly reviews candidate #0 as ACCEPTED
+    target_cand_id = cands_1[0]["candidate_id"]
+    rev_resp = client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json=CandidateBulkReviewRequest(
+            updates=[
+                CandidateReviewUpdate(candidate_id=target_cand_id, status=CandidateStatus.ACCEPTED, review_note="사용자 수동 확정")
+            ]
+        ).model_dump(mode="json"),
+    )
+    assert rev_resp.status_code == 200
+
+    # 3. Search #2 on the same image with slightly shifted bbox and different threshold
+    search_req_2 = {
+        "sample_bbox": [225.0, 225.0, 275.0, 275.0],
+        "suggested_item_code": "LIGHT",
+        "suggested_item_name": "조명기구",
+        "threshold": 0.70,
+    }
+    s2_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/search-symbol", json=search_req_2)
+    assert s2_resp.status_code == 200
+
+    # 4. Check stored candidates in storage: MUST NOT duplicate the candidate count at same locations
+    stored_cands = app_module.storage.get_candidates(proj_id, dwg_id)
+    # The count should match total physical locations, NOT double!
+    assert len(stored_cands) == total_found_1, f"Expected {total_found_1} candidates, got {len(stored_cands)} (duplication occurred!)"
+
+    # User review decision on candidate #0 MUST BE STRICTLY PRESERVED!
+    target_stored = next(c for c in stored_cands if c.candidate_id == target_cand_id)
+    assert target_stored.status == CandidateStatus.ACCEPTED, "User review decision was reset to PROPOSED on re-search!"
+    assert target_stored.review_note == "사용자 수동 확정"
+
+    # 5. Takeoff assertion: one physical location produces AT MOST 1 EA
+    # Accept all stored candidates
+    bulk_all = [CandidateReviewUpdate(candidate_id=c.candidate_id, status=CandidateStatus.ACCEPTED) for c in stored_cands]
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json=CandidateBulkReviewRequest(updates=bulk_all).model_dump(mode="json"),
+    )
+    t_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    t_data = t_resp.json()
+    light_row = next(r for r in t_data["summary"] if r["item_code"] == "LIGHT")
+    # Must equal total physical lights, NOT duplicated
+    assert light_row["quantity"] == total_found_1
+
+    # 6. Multi-page PDF independence: same coordinates on Page 0 and Page 1 are separate physical locations
+    cand_p0 = SymbolCandidate(
+        candidate_id="pdf_cand_p0",
+        drawing_id="dwg_pdf_test",
+        page_index=0,
+        coordinate_space="PDF_PAGE_POINT",
+        x=150.0,
+        y=150.0,
+        bbox=[140.0, 140.0, 160.0, 160.0],
+        suggested_item_code="LIGHT",
+        suggested_item_name="조명기구",
+        confidence=0.9,
+        detection_source="VISUAL_TEMPLATE",
+    )
+    cand_p1 = SymbolCandidate(
+        candidate_id="pdf_cand_p1",
+        drawing_id="dwg_pdf_test",
+        page_index=1,
+        coordinate_space="PDF_PAGE_POINT",
+        x=150.0,
+        y=150.0,
+        bbox=[140.0, 140.0, 160.0, 160.0],
+        suggested_item_code="LIGHT",
+        suggested_item_name="조명기구",
+        confidence=0.9,
+        detection_source="VISUAL_TEMPLATE",
+    )
+    from eai_api.visual_search import are_candidates_spatially_coincident
+    assert not are_candidates_spatially_coincident(cand_p0, cand_p1), "Different PDF pages must NOT be considered coincident!"
+

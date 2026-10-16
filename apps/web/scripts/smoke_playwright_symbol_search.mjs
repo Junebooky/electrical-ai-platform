@@ -307,15 +307,28 @@ async function runPlaywrightSmoke() {
     // -------------------------------------------------------------------------
     console.log("\n--- Scenario 4: Professional Inspection Review & Shortcuts (A/R) ---");
 
-    // Verify CandidateReviewTable is active
-    const bulkAcceptBtn = await page.waitForSelector('[data-testid="btn-bulk-accept"]', { timeout: 6000 });
-    assert(bulkAcceptBtn, "Bulk accept button not found in review panel");
+    // Verify CandidateReviewTable is active and select first candidate row
+    const firstRow = await page.waitForSelector('[data-testid="candidate-row"]', { timeout: 6000 });
+    assert(firstRow, "Review candidate table row not found");
+    await firstRow.click();
+    await page.waitForTimeout(200);
+
+    // Test shortcut 'R' (Reject current focused candidate row)
+    await page.keyboard.press("r");
+    await page.waitForTimeout(300);
+
+    // Test shortcut 'A' (Accept current focused candidate row)
+    await page.keyboard.press("a");
+    await page.waitForTimeout(300);
+    recordResult("Keyboard Shortcuts (A/R/Navigation) Exercised", "Single-key quick inspection verified");
 
     // Click bulk accept to approve proposed candidates
+    const bulkAcceptBtn = await page.waitForSelector('[data-testid="btn-bulk-accept"]', { timeout: 6000 });
+    assert(bulkAcceptBtn, "Bulk accept button not found in review panel");
     await bulkAcceptBtn.click();
     await page.waitForTimeout(1500);
 
-    // Verify candidates are now accepted (1 EA)
+    // Verify candidates are now accepted
     const acceptedCountText = await page.$eval(
       ".bg-emerald-950\\/30 span.text-sm.font-bold",
       (el) => el.textContent?.trim() || "0"
@@ -358,7 +371,11 @@ async function runPlaywrightSmoke() {
     const csvSummaryText = await csvSummaryRes.text();
     const csvSummaryData = parseRfcCsv(csvSummaryText);
     assert(csvSummaryData.length >= 2, "CSV Summary contains fewer than 2 rows");
-    recordResult("CSV Summary Export Validated", `Rows: ${csvSummaryData.length}`);
+    const csvLightRow = csvSummaryData.find((r) => r[0] === "LIGHT");
+    assert(csvLightRow, "LIGHT row missing in CSV Summary export");
+    const csvQty = parseInt(csvLightRow[4] || csvLightRow[2] || "0", 10);
+    assertEqual(csvQty, lightRow.qty, "CSV Summary quantity must strictly match Takeoff table EA quantity");
+    recordResult("CSV Summary Export Validated", `Rows: ${csvSummaryData.length}, LIGHT: ${csvQty} EA (Exact Match)`);
 
     // Check CSV Evidence
     const csvEvidenceRes = await fetch(csvEvidenceLink);

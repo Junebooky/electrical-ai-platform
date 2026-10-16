@@ -318,6 +318,7 @@ export function CandidateReviewTable({
             return (
               <div
                 key={cand.candidate_id}
+                data-testid="candidate-row"
                 onClick={() => onSelectCandidate(cand)}
                 className={`p-3 transition cursor-pointer flex flex-col gap-2 ${
                   isSelected
