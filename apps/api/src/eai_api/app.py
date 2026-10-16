@@ -1068,10 +1068,19 @@ def run_candidate_detection(
     for cand in new_candidates:
         if cand.candidate_id in existing:
             prev = existing[cand.candidate_id]
-            cand.status = prev.status
-            cand.reviewed_item_code = prev.reviewed_item_code
-            cand.reviewed_at = prev.reviewed_at
-            cand.review_note = prev.review_note
+            if prev.status in (CandidateStatus.ACCEPTED, CandidateStatus.REJECTED):
+                cand.status = prev.status
+                cand.suggested_item_code = prev.suggested_item_code
+                cand.suggested_item_name = prev.suggested_item_name
+                cand.reviewed_item_code = prev.reviewed_item_code
+                cand.reviewed_at = prev.reviewed_at
+                cand.review_note = prev.review_note
+                cand.raw_evidence = prev.raw_evidence
+            else:
+                cand.status = prev.status
+                cand.reviewed_item_code = prev.reviewed_item_code
+                cand.reviewed_at = prev.reviewed_at
+                cand.review_note = prev.review_note
         merged.append(cand)
 
     storage.save_candidates(project_id, drawing_id, merged)

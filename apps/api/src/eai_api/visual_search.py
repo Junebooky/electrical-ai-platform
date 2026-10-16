@@ -98,16 +98,25 @@ def non_max_suppression_boxes(
 def are_candidates_spatially_coincident(
     c1: SymbolCandidate,
     c2: SymbolCandidate,
-    iou_thresh: float = 0.40,
-    dist_thresh: float = 15.0,
+    iou_thresh: float = 0.35,
 ) -> bool:
-    """Check if two symbol candidates represent the exact same physical installation location (P0-02).
+    """Check if two symbol candidates represent the exact same physical installation location (P0-02 & P0-REVIEW-02).
 
-    Invariants:
+    Strict Invariants:
     1. Drawing ID and page_index must strictly match (different PDF pages are NEVER coincident).
-    2. If both candidates link to a CAD source_object_id, compare that ID.
-    3. If bboxes exist, evaluate Bounding Box IoU >= iou_thresh.
-    4. Otherwise evaluate Euclidean center distance <= max(dist_thresh, min(w, h) * 0.5).
+    2. DXF: If both candidates link to a CAD source_object_id:
+       - If source_object_id differs, they are distinct CAD entities and NEVER coincident.
+       - If source_object_id matches, they are the same physical entity.
+    3. If bboxes are present on both candidates:
+       - If they do NOT intersect (inter_w <= 0 or inter_h <= 0, i.e. disjoint):
+         They represent physically separated locations -> return False!
+         (Prevents adjacent small symbols like [0,0,4,4] and [10,0,14,4] from being merged).
+       - If they intersect:
+         Check IoU >= iou_thresh OR containment (inter / min(area1, area2) >= 0.65
+         with center distance <= max(2.0, min_dim * 0.40)).
+         If neither condition is met, return False.
+    4. If one or both candidates lack bounding boxes (len(bbox) < 4 or zero area):
+       - Only then fall back to center distance <= 2.0.
     """
     if c1.drawing_id != c2.drawing_id:
         return False
@@ -121,7 +130,11 @@ def are_candidates_spatially_coincident(
 
     b1 = getattr(c1, "bbox", None)
     b2 = getattr(c2, "bbox", None)
-    if b1 and b2 and len(b1) == 4 and len(b2) == 4:
+    has_b1 = bool(b1 and len(b1) == 4 and abs(b1[2] - b1[0]) > 0 and abs(b1[3] - b1[1]) > 0)
+    has_b2 = bool(b2 and len(b2) == 4 and abs(b2[2] - b2[0]) > 0 and abs(b2[3] - b2[1]) > 0)
+
+    if has_b1 and has_b2:
+        assert b1 is not None and b2 is not None
         x1 = max(min(b1[0], b1[2]), min(b2[0], b2[2]))
         y1 = max(min(b1[1], b1[3]), min(b2[1], b2[3]))
         x2 = min(max(b1[0], b1[2]), max(b2[0], b2[2]))
@@ -129,21 +142,33 @@ def are_candidates_spatially_coincident(
         inter_w = max(0.0, x2 - x1)
         inter_h = max(0.0, y2 - y1)
         inter = inter_w * inter_h
+
+        # Disjoint boxes represent separate physical installation spots (P0-REVIEW-02)
+        if inter <= 0.0:
+            return False
+
         area1 = abs((b1[2] - b1[0]) * (b1[3] - b1[1]))
         area2 = abs((b2[2] - b2[0]) * (b2[3] - b2[1]))
         union = area1 + area2 - inter
+
+        # 1. Standard IoU overlap
         if union > 0 and (inter / union) >= iou_thresh:
             return True
 
-    # Center distance comparison
-    dist = math.hypot(c1.x - c2.x, c1.y - c2.y)
-    eff_thresh = dist_thresh
-    if b1 and len(b1) == 4:
-        bw = abs(b1[2] - b1[0])
-        bh = abs(b1[3] - b1[1])
-        eff_thresh = max(dist_thresh, min(bw, bh) * 0.5)
+        # 2. Containment / multi-scale crop match
+        min_area = min(area1, area2)
+        if min_area > 0 and (inter / min_area) >= 0.65:
+            w_min = min(abs(b1[2] - b1[0]), abs(b2[2] - b2[0]))
+            h_min = min(abs(b1[3] - b1[1]), abs(b2[3] - b2[1]))
+            center_dist = math.hypot(c1.x - c2.x, c1.y - c2.y)
+            if center_dist <= max(2.0, min(w_min, h_min) * 0.40):
+                return True
 
-    return dist <= eff_thresh
+        return False
+
+    # Point-only candidates without bounding boxes
+    dist = math.hypot(c1.x - c2.x, c1.y - c2.y)
+    return dist <= 2.0
 
 
 def merge_candidates_spatial(
@@ -152,10 +177,13 @@ def merge_candidates_spatial(
 ) -> list[SymbolCandidate]:
     """Merge incoming candidates with existing candidates, enforcing single-candidate per physical position.
 
-    Crucial Invariants (P0-02):
+    Crucial Invariants (P0-02 & P0-REVIEW-01):
     1. A single physical location NEVER produces multiple candidates.
-    2. User-reviewed decisions (ACCEPTED or REJECTED) on existing candidates are strictly preserved.
+    2. User-reviewed decisions (ACCEPTED or REJECTED) on existing candidates are strictly preserved,
+       including their effective item codes, suggested names, reviewed_at, and review_notes.
+       A re-search with a different item_code (e.g. OUTLET on an accepted LIGHT) MUST NEVER reclassify it.
     3. Different PDF pages remain distinct even if coordinates are identical.
+    4. Only unreviewed PROPOSED candidates may be updated with higher confidence/better detection info.
     """
     merged: list[SymbolCandidate] = list(existing)
 
@@ -169,42 +197,82 @@ def merge_candidates_spatial(
         if match_idx is not None:
             ex_c = merged[match_idx]
 
-            # Preserve user review state if already reviewed
-            final_status: CandidateStatus
+            # Case A: Existing candidate has been reviewed by the user (ACCEPTED or REJECTED)
+            # P0-REVIEW-01: User review status, effective item code, and metadata MUST BE IMMUTABLE
             if ex_c.status in (CandidateStatus.ACCEPTED, CandidateStatus.REJECTED):
-                final_status = ex_c.status
-                final_reviewed_code = ex_c.reviewed_item_code
-                final_review_note = ex_c.review_note or ""
+                updated = SymbolCandidate(
+                    candidate_id=ex_c.candidate_id,
+                    drawing_id=ex_c.drawing_id,
+                    page_index=ex_c.page_index,
+                    coordinate_space=ex_c.coordinate_space,
+                    x=ex_c.x,
+                    y=ex_c.y,
+                    bbox=ex_c.bbox,
+                    suggested_item_code=ex_c.suggested_item_code,
+                    suggested_item_name=ex_c.suggested_item_name,
+                    reviewed_item_code=ex_c.reviewed_item_code,
+                    confidence=max(ex_c.confidence, new_c.confidence),
+                    detection_source=ex_c.detection_source,
+                    status=ex_c.status,
+                    reviewed_at=ex_c.reviewed_at,
+                    review_note=ex_c.review_note or "",
+                    raw_evidence=dict(ex_c.raw_evidence or {}),
+                )
+                merged[match_idx] = updated
+
+            # Case B: Incoming candidate is reviewed while existing candidate is unreviewed
             elif new_c.status in (CandidateStatus.ACCEPTED, CandidateStatus.REJECTED):
-                final_status = new_c.status
-                final_reviewed_code = new_c.reviewed_item_code
-                final_review_note = new_c.review_note or ""
+                updated = SymbolCandidate(
+                    candidate_id=ex_c.candidate_id,
+                    drawing_id=ex_c.drawing_id,
+                    page_index=ex_c.page_index,
+                    coordinate_space=ex_c.coordinate_space,
+                    x=new_c.x,
+                    y=new_c.y,
+                    bbox=new_c.bbox,
+                    suggested_item_code=new_c.suggested_item_code,
+                    suggested_item_name=new_c.suggested_item_name,
+                    reviewed_item_code=new_c.reviewed_item_code,
+                    confidence=max(ex_c.confidence, new_c.confidence),
+                    detection_source=new_c.detection_source,
+                    status=new_c.status,
+                    reviewed_at=new_c.reviewed_at,
+                    review_note=new_c.review_note or "",
+                    raw_evidence=dict(new_c.raw_evidence or {}),
+                )
+                merged[match_idx] = updated
+
+            # Case C: Both candidates are PROPOSED (unreviewed). Safe to update with best proposal.
             else:
-                final_status = CandidateStatus.PROPOSED
-                final_reviewed_code = None
-                final_review_note = ""
+                if new_c.confidence >= ex_c.confidence:
+                    best_c = new_c
+                    other_c = ex_c
+                else:
+                    best_c = ex_c
+                    other_c = new_c
 
-            merged_evidence = dict(ex_c.raw_evidence or {})
-            merged_evidence.update(new_c.raw_evidence or {})
+                merged_evidence = dict(other_c.raw_evidence or {})
+                merged_evidence.update(best_c.raw_evidence or {})
 
-            updated = SymbolCandidate(
-                candidate_id=ex_c.candidate_id,
-                drawing_id=ex_c.drawing_id,
-                page_index=ex_c.page_index,
-                coordinate_space=ex_c.coordinate_space,
-                x=ex_c.x if ex_c.status != CandidateStatus.PROPOSED else round((ex_c.x + new_c.x) / 2.0, 2),
-                y=ex_c.y if ex_c.status != CandidateStatus.PROPOSED else round((ex_c.y + new_c.y) / 2.0, 2),
-                bbox=new_c.bbox or ex_c.bbox,
-                suggested_item_code=new_c.suggested_item_code or ex_c.suggested_item_code,
-                suggested_item_name=new_c.suggested_item_name or ex_c.suggested_item_name,
-                reviewed_item_code=final_reviewed_code,
-                confidence=max(ex_c.confidence, new_c.confidence),
-                detection_source=new_c.detection_source or ex_c.detection_source,
-                status=final_status,
-                review_note=final_review_note,
-                raw_evidence=merged_evidence,
-            )
-            merged[match_idx] = updated
+                updated = SymbolCandidate(
+                    candidate_id=ex_c.candidate_id,
+                    drawing_id=ex_c.drawing_id,
+                    page_index=ex_c.page_index,
+                    coordinate_space=ex_c.coordinate_space,
+                    x=round((ex_c.x + new_c.x) / 2.0, 2),
+                    y=round((ex_c.y + new_c.y) / 2.0, 2),
+                    bbox=best_c.bbox or ex_c.bbox,
+                    suggested_item_code=best_c.suggested_item_code or ex_c.suggested_item_code,
+                    suggested_item_name=best_c.suggested_item_name or ex_c.suggested_item_name,
+                    reviewed_item_code=None,
+                    confidence=max(ex_c.confidence, new_c.confidence),
+                    detection_source=best_c.detection_source or ex_c.detection_source,
+                    status=CandidateStatus.PROPOSED,
+                    reviewed_at=None,
+                    review_note="",
+                    raw_evidence=merged_evidence,
+                )
+                merged[match_idx] = updated
         else:
             merged.append(new_c)
 

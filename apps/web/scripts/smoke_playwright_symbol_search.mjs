@@ -315,12 +315,22 @@ async function runPlaywrightSmoke() {
 
     // Test shortcut 'R' (Reject current focused candidate row)
     await page.keyboard.press("r");
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(600);
+    const rejectedCountText = await page.$eval(
+      ".bg-rose-950\\/30 span.text-sm.font-bold",
+      (el) => el.textContent?.trim() || "0"
+    );
+    assert(rejectedCountText !== "0건", `Shortcut 'r' failed to transition candidate to REJECTED (count: ${rejectedCountText})`);
 
     // Test shortcut 'A' (Accept current focused candidate row)
     await page.keyboard.press("a");
-    await page.waitForTimeout(300);
-    recordResult("Keyboard Shortcuts (A/R/Navigation) Exercised", "Single-key quick inspection verified");
+    await page.waitForTimeout(600);
+    const acceptedSingleCount = await page.$eval(
+      ".bg-emerald-950\\/30 span.text-sm.font-bold",
+      (el) => el.textContent?.trim() || "0"
+    );
+    assert(acceptedSingleCount !== "0건", `Shortcut 'a' failed to transition candidate to ACCEPTED (count: ${acceptedSingleCount})`);
+    recordResult("Keyboard Shortcuts (A/R/Navigation) Exercised", `Single-key quick inspection verified (R -> ${rejectedCountText}, A -> ${acceptedSingleCount})`);
 
     // Click bulk accept to approve proposed candidates
     const bulkAcceptBtn = await page.waitForSelector('[data-testid="btn-bulk-accept"]', { timeout: 6000 });
@@ -394,7 +404,13 @@ async function runPlaywrightSmoke() {
       xlsxBuffer[0] === 0x50 && xlsxBuffer[1] === 0x4b,
       "XLSX file header does not match PK zip signature"
     );
-    recordResult("XLSX Export Validated", `Valid Excel Workbook (${xlsxBuffer.length} bytes)`);
+    const xlsxBinaryStr = xlsxBuffer.toString("latin1");
+    assert(
+      xlsxBinaryStr.includes("sheet1.xml") && xlsxBinaryStr.includes("sheet2.xml"),
+      "XLSX workbook must contain both sheet1.xml (Takeoff Summary) and sheet2.xml (Evidence)"
+    );
+    assert(xlsxBinaryStr.includes("workbook.xml"), "XLSX workbook structure verified");
+    recordResult("XLSX Export Validated", `Valid 2-Sheet Excel Workbook (${xlsxBuffer.length} bytes, Summary+Evidence)`);
 
     // -------------------------------------------------------------------------
     // Step 7: Demo Reseed Idempotency (P1-DEMO-RESEED)

@@ -1013,14 +1013,27 @@ def build_takeoff_result(
             if cand.raw_evidence and cand.raw_evidence.get("is_structurally_blocked"):
                 continue
 
-            # On DXF drawings, if this candidate spatially matches any CAD object, it belongs to CAD object processing
-            if not is_pdf_dwg and not is_image_dwg:
+            # On DXF drawings, if this candidate spatially matches any CAD object without source_object_id,
+            # it belongs to CAD object processing (P0-REVIEW-02)
+            if not is_pdf_dwg and not is_image_dwg and cand_obj_id is None:
                 is_cad_match = False
                 for o in cad_objects:
                     pt = getattr(o, "insert_point", None)
-                    if pt and math.hypot(cand.x - float(pt[0]), cand.y - float(pt[1])) < 15.0:
-                        is_cad_match = True
-                        break
+                    if pt:
+                        ox, oy = float(pt[0]), float(pt[1])
+                        b = cand.bbox
+                        if b and len(b) == 4 and abs(b[2] - b[0]) > 0 and abs(b[3] - b[1]) > 0:
+                            min_x, max_x = min(b[0], b[2]), max(b[0], b[2])
+                            min_y, max_y = min(b[1], b[3]), max(b[1], b[3])
+                            if min_x <= ox <= max_x and min_y <= oy <= max_y:
+                                bw = max_x - min_x
+                                bh = max_y - min_y
+                                if math.hypot(cand.x - ox, cand.y - oy) <= max(2.0, min(bw, bh) * 0.35):
+                                    is_cad_match = True
+                                    break
+                        elif math.hypot(cand.x - ox, cand.y - oy) <= 2.0:
+                            is_cad_match = True
+                            break
                 if is_cad_match:
                     continue
 

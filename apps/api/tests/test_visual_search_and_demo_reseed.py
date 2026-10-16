@@ -477,3 +477,265 @@ def test_p0_02_spatial_deduplication_and_review_preservation(client: TestClient)
     from eai_api.visual_search import are_candidates_spatially_coincident
     assert not are_candidates_spatially_coincident(cand_p0, cand_p1), "Different PDF pages must NOT be considered coincident!"
 
+
+def test_p0_review_01_reviewed_candidates_immutable_on_research(client: TestClient) -> None:
+    """[P0-REVIEW-01] User-reviewed candidates (ACCEPTED/REJECTED) must never be silently reclassified
+
+    or have their effective item codes/review notes/timestamps mutated by a subsequent search
+    targeting the same location with a different item_code.
+    """
+    from eai_api import app as app_module
+    from eai_api.visual_search import merge_candidates_spatial
+
+    p_resp = client.post("/api/projects", json={"name": "P0-REVIEW-01 Reclassification Defense Test"})
+    proj_id = p_resp.json()["id"]
+
+    img_bytes = IMAGE_FIXTURE_PATH.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", img_bytes, "image/png")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # 1. Search #1 targeting LIGHT around (250, 250)
+    search_req_1 = {
+        "sample_bbox": [227.0, 227.0, 273.0, 273.0],
+        "suggested_item_code": "LIGHT",
+        "suggested_item_name": "조명기구",
+        "threshold": 0.75,
+    }
+    s1_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/search-symbol", json=search_req_1)
+    assert s1_resp.status_code == 200
+    cands_1 = s1_resp.json()["candidates"]
+    assert len(cands_1) >= 1
+    target_cand_id = cands_1[0]["candidate_id"]
+
+    # 2. User explicitly ACCEPTS candidate (reviewed_item_code=None, accepting suggested LIGHT)
+    review_note = "조명기구 정규 승인 완료"
+    rev_resp = client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json=CandidateBulkReviewRequest(
+            updates=[
+                CandidateReviewUpdate(
+                    candidate_id=target_cand_id,
+                    status=CandidateStatus.ACCEPTED,
+                    reviewed_item_code=None,  # Explicitly None to test the default acceptance path
+                    review_note=review_note,
+                )
+            ]
+        ).model_dump(mode="json"),
+    )
+    assert rev_resp.status_code == 200
+
+    # Verify reviewed candidate state in storage before re-search
+    stored_before = app_module.storage.get_candidates(proj_id, dwg_id)
+    target_before = next(c for c in stored_before if c.candidate_id == target_cand_id)
+    assert target_before.status == CandidateStatus.ACCEPTED
+    assert target_before.suggested_item_code == "LIGHT"
+    assert target_before.reviewed_item_code is None
+    assert target_before.reviewed_at is not None
+    assert target_before.review_note == review_note
+    original_reviewed_at = target_before.reviewed_at
+
+    # 3. Search #2 on the EXACT same location with suggested_item_code="OUTLET"
+    search_req_2 = {
+        "sample_bbox": [227.0, 227.0, 273.0, 273.0],
+        "suggested_item_code": "OUTLET",
+        "suggested_item_name": "전열콘센트",
+        "threshold": 0.75,
+    }
+    s2_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/search-symbol", json=search_req_2)
+    assert s2_resp.status_code == 200
+
+    # 4. Check candidate in storage: MUST NOT be reclassified to OUTLET!
+    stored_after = app_module.storage.get_candidates(proj_id, dwg_id)
+    target_after = next(c for c in stored_after if c.candidate_id == target_cand_id)
+    assert target_after.status == CandidateStatus.ACCEPTED, "Review status was lost!"
+    assert target_after.suggested_item_code == "LIGHT", f"Candidate suggested_item_code was illegally overridden to {target_after.suggested_item_code}!"
+    assert target_after.suggested_item_name == "조명기구", "Candidate suggested_item_name was mutated!"
+    assert target_after.reviewed_item_code is None, "reviewed_item_code was unexpectedly mutated!"
+    assert target_after.reviewed_at == original_reviewed_at, "reviewed_at was reset or cleared!"
+    assert target_after.review_note == review_note, "review_note was lost!"
+
+    # 5. Takeoff assertion: strictly LIGHT 1 EA, OUTLET 0 EA
+    t_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    assert t_resp.status_code == 200
+    t_data = t_resp.json()
+    summary_map = {r["item_code"]: r["quantity"] for r in t_data["summary"]}
+    assert summary_map.get("LIGHT") == 1, f"Expected LIGHT 1 EA, got {summary_map.get('LIGHT')}"
+    assert summary_map.get("OUTLET", 0) == 0, f"OUTLET must be 0 EA, got {summary_map.get('OUTLET')}"
+
+    # 6. CSV Export assertions
+    csv_sum_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/csv?type=summary")
+    assert csv_sum_resp.status_code == 200
+    csv_rows = list(csv.reader(io.StringIO(csv_sum_resp.content.decode("utf-8-sig"))))
+    header = csv_rows[0]
+    item_code_idx = header.index("item_code")
+    qty_idx = header.index("quantity")
+    light_csv = next((r for r in csv_rows[1:] if r[item_code_idx] == "LIGHT"), None)
+    outlet_csv = next((r for r in csv_rows[1:] if r[item_code_idx] == "OUTLET"), None)
+    assert light_csv is not None and int(light_csv[qty_idx]) == 1
+    assert outlet_csv is None
+
+    # 7. Excel (.xlsx) openpyxl exact cell value verification
+    xlsx_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/xlsx")
+    assert xlsx_resp.status_code == 200
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
+    assert "Takeoff Summary" in wb.sheetnames
+    ws = wb["Takeoff Summary"]
+    headers = [str(cell.value) for cell in ws[1]]
+    code_col = next(i + 1 for i, h in enumerate(headers) if "item_code" in h)
+    qty_col = next(i + 1 for i, h in enumerate(headers) if "quantity" in h)
+    found_light_qty: int | None = None
+    for row in range(2, ws.max_row + 1):
+        if ws.cell(row=row, column=code_col).value == "LIGHT":
+            found_light_qty = int(ws.cell(row=row, column=qty_col).value or 0)
+    assert found_light_qty == 1, f"Excel Takeoff Summary LIGHT cell must be 1, got {found_light_qty}"
+
+    # 8. REJECTED candidate preservation
+    reject_cand = SymbolCandidate(
+        candidate_id="cand_rej_test",
+        drawing_id=dwg_id,
+        page_index=0,
+        coordinate_space="IMAGE_PIXEL",
+        x=500.0,
+        y=500.0,
+        bbox=[490.0, 490.0, 510.0, 510.0],
+        suggested_item_code="SWITCH",
+        suggested_item_name="스위치",
+        confidence=0.88,
+        detection_source="IMAGE_TEMPLATE",
+        status=CandidateStatus.REJECTED,
+        review_note="노이즈 오탐 반려",
+    )
+    incoming_switch = SymbolCandidate(
+        candidate_id="cand_new_switch",
+        drawing_id=dwg_id,
+        page_index=0,
+        coordinate_space="IMAGE_PIXEL",
+        x=500.0,
+        y=500.0,
+        bbox=[490.0, 490.0, 510.0, 510.0],
+        suggested_item_code="PANEL",
+        suggested_item_name="분전반",
+        confidence=0.92,
+        detection_source="IMAGE_TEMPLATE",
+        status=CandidateStatus.PROPOSED,
+    )
+    merged_rej = merge_candidates_spatial([reject_cand], [incoming_switch])
+    assert len(merged_rej) == 1
+    assert merged_rej[0].status == CandidateStatus.REJECTED
+    assert merged_rej[0].suggested_item_code == "SWITCH"
+    assert merged_rej[0].review_note == "노이즈 오탐 반려"
+
+
+def test_p0_review_02_adjacent_close_symbols_not_eliminated(client: TestClient) -> None:
+    """[P0-REVIEW-02] Closely adjacent, non-overlapping physical equipment must NOT be merged
+
+    by an arbitrary distance radius (e.g. 15px). Disjoint bounding boxes must remain separate
+    candidates and produce exact multi-EA counts upon acceptance.
+    """
+    from eai_api import app as app_module
+    from eai_api.visual_search import are_candidates_spatially_coincident, merge_candidates_spatial
+
+    # 1. Two small non-overlapping close equipment on the same IMAGE drawing
+    # c1: bbox [0, 0, 4, 4], center (2, 2)
+    # c2: bbox [10, 0, 14, 4], center (12, 2)
+    # Center distance is 10.0 <= 15.0, but bounding boxes are strictly disjoint (inter == 0.0)
+    c1 = SymbolCandidate(
+        candidate_id="cand_adj_1",
+        drawing_id="dwg_adj_test",
+        page_index=0,
+        coordinate_space="IMAGE_PIXEL",
+        x=2.0,
+        y=2.0,
+        bbox=[0.0, 0.0, 4.0, 4.0],
+        suggested_item_code="LIGHT",
+        suggested_item_name="소형 조명 1",
+        confidence=0.9,
+        detection_source="IMAGE_TEMPLATE",
+        status=CandidateStatus.PROPOSED,
+    )
+    c2 = SymbolCandidate(
+        candidate_id="cand_adj_2",
+        drawing_id="dwg_adj_test",
+        page_index=0,
+        coordinate_space="IMAGE_PIXEL",
+        x=12.0,
+        y=2.0,
+        bbox=[10.0, 0.0, 14.0, 4.0],
+        suggested_item_code="LIGHT",
+        suggested_item_name="소형 조명 2",
+        confidence=0.9,
+        detection_source="IMAGE_TEMPLATE",
+        status=CandidateStatus.PROPOSED,
+    )
+
+    # Invariant: Disjoint bounding boxes are NEVER spatially coincident
+    assert not are_candidates_spatially_coincident(c1, c2), "Non-overlapping close symbols must NOT be considered coincident!"
+
+    # Invariant: Merging them keeps BOTH candidates
+    merged = merge_candidates_spatial([c1], [c2])
+    assert len(merged) == 2, f"Expected 2 candidates, got {len(merged)} (under-counting occurred!)"
+
+    # 2. Full Takeoff and CSV validation on project with adjacent symbols
+    p_resp = client.post("/api/projects", json={"name": "Adjacent Symbols EA Test"})
+    proj_id = p_resp.json()["id"]
+
+    img_bytes = IMAGE_FIXTURE_PATH.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", img_bytes, "image/png")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # Save both candidates as ACCEPTED
+    c1_dwg = c1.model_copy(update={"drawing_id": dwg_id, "status": CandidateStatus.ACCEPTED})
+    c2_dwg = c2.model_copy(update={"drawing_id": dwg_id, "status": CandidateStatus.ACCEPTED})
+    app_module.storage.save_candidates(proj_id, dwg_id, [c1_dwg, c2_dwg])
+
+    # Calculate Takeoff: MUST strictly be 2 EA (not reduced to 1 EA!)
+    t_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    assert t_resp.status_code == 200
+    t_data = t_resp.json()
+    light_row = next((r for r in t_data["summary"] if r["item_code"] == "LIGHT"), None)
+    assert light_row is not None
+    assert light_row["quantity"] == 2, f"Adjacent symbols must produce 2 EA, got {light_row['quantity']}"
+
+    # Verify Evidence rows count is strictly 2
+    ev_cands = [e for e in t_data["evidence"] if e["entity_type"] == "SYMBOL_CANDIDATE"]
+    assert len(ev_cands) == 2, f"Expected 2 evidence rows, got {len(ev_cands)}"
+
+    # 3. DXF with different source_object_id: NEVER coincident even if bounding boxes overlap
+    dxf_c1 = SymbolCandidate(
+        candidate_id="dxf_cand_1",
+        drawing_id="dwg_dxf_test",
+        page_index=0,
+        coordinate_space="WORLD",
+        x=100.0,
+        y=100.0,
+        bbox=[85.0, 85.0, 115.0, 115.0],
+        suggested_item_code="LIGHT",
+        suggested_item_name="조명 1",
+        confidence=0.95,
+        detection_source="DXF_BLOCK",
+        raw_evidence={"source_object_id": "cad_obj_001"},
+    )
+    dxf_c2 = SymbolCandidate(
+        candidate_id="dxf_cand_2",
+        drawing_id="dwg_dxf_test",
+        page_index=0,
+        coordinate_space="WORLD",
+        x=105.0,
+        y=105.0,
+        bbox=[90.0, 90.0, 120.0, 120.0],
+        suggested_item_code="LIGHT",
+        suggested_item_name="조명 2",
+        confidence=0.95,
+        detection_source="DXF_BLOCK",
+        raw_evidence={"source_object_id": "cad_obj_002"},
+    )
+    assert not are_candidates_spatially_coincident(dxf_c1, dxf_c2), "Different CAD source_object_ids must NEVER be coincident!"
+    merged_dxf = merge_candidates_spatial([dxf_c1], [dxf_c2])
+    assert len(merged_dxf) == 2
+
