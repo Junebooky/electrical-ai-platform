@@ -1,0 +1,29 @@
+{
+  "description": "꺼짐·동결 레이어의 조명은 자동 확정하지 않고 미확인 분리",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "LT-DL": 5
+  },
+  "nested_inserts": {},
+  "warnings": [
+    "HIDDEN_LAYER"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "LT-DL",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {
+    "LIGHT": 3
+  },
+  "expected_unresolved": 2,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

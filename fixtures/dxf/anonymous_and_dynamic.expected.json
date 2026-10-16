@@ -1,0 +1,36 @@
+{
+  "description": "익명 블록 2개(원본명 없음) + 동적 블록 참조 1개(원본명 LT-DYN 추정)",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "*U1": 2,
+    "*U2": 1
+  },
+  "nested_inserts": {},
+  "warnings": [
+    "ANONYMOUS_BLOCK",
+    "DYNAMIC_BLOCK"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "LT-DYN",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {},
+  "expected_unresolved": 1,
+  "expected_unmapped": 2,
+  "insert_checks": [
+    {
+      "block": "*U2",
+      "x": 1500,
+      "y": 0,
+      "effective_block_name": "LT-DYN"
+    }
+  ],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

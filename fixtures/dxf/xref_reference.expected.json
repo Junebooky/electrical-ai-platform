@@ -1,0 +1,34 @@
+{
+  "description": "외부참조(XREF) 포함: 경고 + 외부참조 블록은 집계 대상 아님",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "ARCH_BASE": 1,
+    "LT-DL": 1
+  },
+  "nested_inserts": {},
+  "warnings": [
+    "XREF_UNRESOLVED"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "LT-DL",
+      "item_code": "LIGHT"
+    },
+    {
+      "block_name": "ARCH_BASE",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {
+    "LIGHT": 1
+  },
+  "expected_unresolved": 1,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

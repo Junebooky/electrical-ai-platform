@@ -1,0 +1,20 @@
+{
+  "description": "Model Space 비어 있음",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {},
+  "nested_inserts": {},
+  "warnings": [
+    "EMPTY_MODELSPACE"
+  ],
+  "absent_warnings": [],
+  "mappings": [],
+  "expected_counts": {},
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}

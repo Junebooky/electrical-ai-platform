@@ -1,0 +1,29 @@
+{
+  "description": "R2000 + CP949(ANSI_949) 한글 레이어·블록·문자",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": "cp949",
+  "top_level_inserts": {
+    "조명-매입": 2
+  },
+  "nested_inserts": {},
+  "warnings": [],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "조명-매입",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {
+    "LIGHT": 2
+  },
+  "expected_unresolved": 0,
+  "expected_unmapped": 0,
+  "insert_checks": [],
+  "texts": [
+    "주방"
+  ],
+  "lengths": [],
+  "allow_error_or_warning": false
+}
