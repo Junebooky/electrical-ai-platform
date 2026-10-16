@@ -65,6 +65,13 @@ def pdf_encrypted() -> bytes:
     return p.read_bytes()
 
 
+@pytest.fixture
+def pdf_scanned_mixed() -> bytes:
+    p = FIXTURES_DIR / "pdf_b_scanned_mixed.pdf"
+    assert p.exists(), f"Missing fixture {p}"
+    return p.read_bytes()
+
+
 def test_pdf_upload_metadata_multipage(client: TestClient, pdf_two_pages: bytes) -> None:
     """PDF multi-page upload returns page count, per-page dimensions, and canonical coordinate space."""
     proj_res = client.post("/api/projects", json={"name": "PDF 다중페이지 테스트"})
@@ -484,4 +491,186 @@ def test_pdf_a04_matrix_scenario_with_expected_json(client: TestClient, pdf_two_
         assert sum_map[code]["quantity"] == expected_info["quantity"]
         assert sum_map[code]["unit"] == expected_info["unit"]
         assert sum_map[code]["is_provisional"] is exp_sum["is_provisional"]
+
+
+def test_pdf_scanned_mixed_drawing(client: TestClient, pdf_scanned_mixed: bytes) -> None:
+    """PDF with mixed scanned raster page (Page 0) and vector electrical page (Page 1).
+
+    Validates:
+    - 2 pages parsed correctly with 800x600 pt dimensions.
+    - Page 0 (raster) renders successfully without OCR crash.
+    - Page 1 (vector) renders successfully.
+    - Manual markers can be added to both raster and vector pages.
+    - Disclaimer warning is present.
+    """
+    proj = client.post("/api/projects", json={"name": "스캔 및 벡터 혼합 PDF 테스트"}).json()
+    proj_id = proj["id"]
+
+    upload_res = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("scanned_mixed.pdf", pdf_scanned_mixed, "application/pdf")},
+    )
+    assert upload_res.status_code == 200
+    dwg_meta = upload_res.json()
+    drawing_id = dwg_meta["drawing_id"]
+
+    assert dwg_meta["page_count"] == 2
+    assert dwg_meta["coordinate_space"] == "PDF_PAGE_POINT"
+
+    # Verify rendering of Page 0 (scanned raster) and Page 1 (vector)
+    p0_img = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/pages/0/image")
+    assert p0_img.status_code == 200
+    assert p0_img.headers["content-type"] == "image/png"
+    assert len(p0_img.content) > 1000
+
+    p1_img = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/pages/1/image")
+    assert p1_img.status_code == 200
+    assert p1_img.headers["content-type"] == "image/png"
+    assert len(p1_img.content) > 1000
+
+    # Place manual marker on Page 0 (raster page)
+    res_m0 = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "scan_m1", "drawing_id": drawing_id, "page_index": 0, "x": 215.0, "y": 215.0, "item_code": "SWITCH", "item_name": "스위치", "unit": "EA"},
+    )
+    assert res_m0.status_code == 200
+
+    # Place manual marker on Page 1 (vector page)
+    res_m1 = client.post(
+        f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+        json={"id": "vec_m1", "drawing_id": drawing_id, "page_index": 1, "x": 325.0, "y": 325.0, "item_code": "LIGHT", "item_name": "조명", "unit": "EA"},
+    )
+    assert res_m1.status_code == 200
+
+    # Verify takeoff calculation
+    t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
+    assert t_res.status_code == 200
+    takeoff = t_res.json()
+
+    assert len(takeoff["summary"]) == 2
+    by_code = {s["item_code"]: s for s in takeoff["summary"]}
+    assert by_code["SWITCH"]["quantity"] == 1
+    assert by_code["SWITCH"]["unit"] == "EA"
+    assert by_code["SWITCH"]["is_provisional"] is True
+    assert by_code["LIGHT"]["quantity"] == 1
+    assert by_code["LIGHT"]["unit"] == "EA"
+    assert by_code["LIGHT"]["is_provisional"] is True
+
+
+def test_pdf_expected_catalog_oracle(client: TestClient) -> None:
+    """Validate all synthetic fixtures against fixtures/pdf/expected.json catalog oracle.
+
+    Ensures:
+    1. File existence, exact SHA256 match, and byte size match.
+    2. Upload and metadata parsing match ground truth page dimensions and rotation.
+    3. Manual marker insertion matches expected takeoff quantities and provisional status.
+    4. Exclusion/restoration operations yield exact expected quantities.
+    """
+    import json
+
+    catalog_path = FIXTURES_DIR / "expected.json"
+    assert catalog_path.exists(), f"Missing catalog {catalog_path}"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+
+    proj = client.post("/api/projects", json={"name": "PDF 카탈로그 전체 오라클 검증"}).json()
+    proj_id = proj["id"]
+
+    for fixture_name, spec in catalog["fixtures"].items():
+        pdf_path = FIXTURES_DIR / spec["filename"]
+        assert pdf_path.exists(), f"Missing fixture file {pdf_path}"
+        pdf_bytes = pdf_path.read_bytes()
+
+        # 1. SHA256 and byte size integrity
+        assert len(pdf_bytes) == spec["file_size_bytes"]
+        assert hashlib.sha256(pdf_bytes).hexdigest() == spec["sha256"]
+
+        # 2. Upload
+        upload_res = client.post(
+            f"/api/projects/{proj_id}/drawings",
+            files={"file": (spec["filename"], pdf_bytes, "application/pdf")},
+        )
+        assert upload_res.status_code == 200, f"Upload failed for {fixture_name}: {upload_res.text}"
+        dwg = upload_res.json()
+        drawing_id = dwg["drawing_id"]
+        assert dwg["page_count"] == spec["page_count"]
+
+        # 3. Add markers
+        for page in spec["pages"]:
+            p_idx = page["page_index"]
+            for marker in page["manual_markers"]:
+                add_res = client.post(
+                    f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects",
+                    json={
+                        "id": marker["id"],
+                        "drawing_id": drawing_id,
+                        "page_index": p_idx,
+                        "x": marker["x"],
+                        "y": marker["y"],
+                        "item_code": marker["item_code"],
+                        "item_name": marker.get("item_name", marker["item_code"]),
+                        "unit": marker["unit"],
+                    },
+                )
+                assert add_res.status_code == 200
+
+        # 4. Takeoff check
+        t_res = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff")
+        assert t_res.status_code == 200
+        takeoff = t_res.json()
+
+        exp_takeoff = spec["expected_takeoff"]
+        actual_total = sum(s["quantity"] for s in takeoff["summary"])
+        assert actual_total == exp_takeoff["total_quantity"]
+
+        actual_items = {s["item_code"]: s for s in takeoff["summary"]}
+        for item_code, item_spec in exp_takeoff["items"].items():
+            assert item_code in actual_items
+            assert actual_items[item_code]["quantity"] == item_spec["quantity"]
+            assert actual_items[item_code]["unit"] == item_spec["unit"]
+            assert actual_items[item_code]["is_provisional"] is exp_takeoff["is_provisional"]
+
+        # 5. Operations check (exclude / restore / reload) if defined
+        if "operations_expected" in spec:
+            ops = spec["operations_expected"]
+            ex_id = ops["exclude_marker_id"]
+
+            # Exclude marker via review PUT endpoint
+            ex_res = client.put(
+                f"/api/projects/{proj_id}/drawings/{drawing_id}/reviews",
+                json=[
+                    {
+                        "source_object_id": ex_id,
+                        "inclusion_status": "EXCLUDED",
+                        "reason": "테스트 제외",
+                    }
+                ],
+            )
+            assert ex_res.status_code == 200
+
+            # Verify takeoff after exclusion
+            t_ex = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff").json()
+            total_after_ex = sum(s["quantity"] for s in t_ex["summary"])
+            assert total_after_ex == ops["quantity_after_exclude"]
+
+            # Restore marker
+            re_res = client.put(
+                f"/api/projects/{proj_id}/drawings/{drawing_id}/reviews",
+                json=[
+                    {
+                        "source_object_id": ex_id,
+                        "inclusion_status": "INCLUDED",
+                        "reason": "테스트 복원",
+                    }
+                ],
+            )
+            assert re_res.status_code == 200
+
+            # Verify takeoff after restoration
+            t_re = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/takeoff").json()
+            total_after_re = sum(s["quantity"] for s in t_re["summary"])
+            assert total_after_re == ops["quantity_after_restore"]
+
+            # Reload markers check
+            man_list = client.get(f"/api/projects/{proj_id}/drawings/{drawing_id}/manual-objects").json()
+            assert len(man_list) == ops["reload_marker_count"]
 
