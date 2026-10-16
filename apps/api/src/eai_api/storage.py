@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -31,6 +32,7 @@ from .models import (
     TakeoffResult,
     TakeoffSummaryRow,
 )
+from .visual_search import are_candidates_spatially_coincident
 
 DEFAULT_DATA_DIR = Path(os.environ.get("EAI_DATA_DIR", "./.eai_data")).resolve()
 
@@ -507,7 +509,14 @@ class Storage:
 
     def _save_json(self, path: Path, data: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex[:6]}")
+        try:
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path.exists():
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
 
 
 def find_canonical_item_conflicts(
@@ -650,7 +659,10 @@ def build_takeoff_result(
         for cand in candidates:
             sid = cand.raw_evidence.get("source_object_id") if cand.raw_evidence else None
             if sid:
-                candidate_by_cad_id[str(sid)] = cand
+                sid_str = str(sid)
+                ex_c = candidate_by_cad_id.get(sid_str)
+                if not ex_c or (ex_c.status == CandidateStatus.PROPOSED and cand.status != CandidateStatus.PROPOSED):
+                    candidate_by_cad_id[sid_str] = cand
 
     # Step 1: Compute tentative statuses including structural & domain blocking & reviews
     tentative_status: dict[str, dict[str, Any]] = {}
@@ -983,8 +995,9 @@ def build_takeoff_result(
             )
         )
 
-    # 3. Process Accepted Symbol Candidates (Issue #23)
+    # 3. Process Accepted Symbol Candidates (Issue #23 & Issue #29)
     if candidates:
+        accepted_evidence_candidates: list[SymbolCandidate] = []
         for cand in candidates:
             # Domain Invariant: PROPOSED and REJECTED candidates MUST NEVER contribute to takeoff
             if cand.status != CandidateStatus.ACCEPTED:
@@ -995,6 +1008,40 @@ def build_takeoff_result(
             cand_obj_id = cand.raw_evidence.get("source_object_id") if cand.raw_evidence else None
             if cand_obj_id and (str(cand_obj_id) in cad_object_ids or cand.candidate_id in cad_object_ids):
                 continue
+
+            # P0-01: Structurally blocked candidate must fail-closed to 0 EA even if accepted
+            if cand.raw_evidence and cand.raw_evidence.get("is_structurally_blocked"):
+                continue
+
+            # On DXF drawings, if this candidate spatially matches any CAD object without source_object_id,
+            # it belongs to CAD object processing (P0-REVIEW-02)
+            if not is_pdf_dwg and not is_image_dwg and cand_obj_id is None:
+                is_cad_match = False
+                for o in cad_objects:
+                    pt = getattr(o, "insert_point", None)
+                    if pt:
+                        ox, oy = float(pt[0]), float(pt[1])
+                        b = cand.bbox
+                        if b and len(b) == 4 and abs(b[2] - b[0]) > 0 and abs(b[3] - b[1]) > 0:
+                            min_x, max_x = min(b[0], b[2]), max(b[0], b[2])
+                            min_y, max_y = min(b[1], b[3]), max(b[1], b[3])
+                            if min_x <= ox <= max_x and min_y <= oy <= max_y:
+                                bw = max_x - min_x
+                                bh = max_y - min_y
+                                if math.hypot(cand.x - ox, cand.y - oy) <= max(2.0, min(bw, bh) * 0.35):
+                                    is_cad_match = True
+                                    break
+                        elif math.hypot(cand.x - ox, cand.y - oy) <= 2.0:
+                            is_cad_match = True
+                            break
+                if is_cad_match:
+                    continue
+
+            # P0-02 Level 2 Defense: 하나의 물리 설치 위치는 최대 1 EA
+            # Check if another accepted candidate on the same page already claimed this physical spot
+            if any(are_candidates_spatially_coincident(claimed, cand) for claimed in accepted_evidence_candidates):
+                continue
+            accepted_evidence_candidates.append(cand)
 
             effective_code = cand.reviewed_item_code or cand.suggested_item_code
             if not effective_code or effective_code in ("EXCLUDE", "UNMAPPED") or effective_code in conflicted_codes:

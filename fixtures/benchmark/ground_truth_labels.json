@@ -1,0 +1,50 @@
+{
+  "description": "Ground-truth benchmark label dataset for multi-format symbol detection (Issue #29 Workstream A)",
+  "version": "1.0.0",
+  "fixtures": {
+    "floorplan_sample.png": {
+      "source_type": "IMAGE",
+      "coordinate_space": "IMAGE_PIXEL",
+      "symbols": [
+        {"item_code": "LIGHT", "item_name": "조명기구", "x": 250.0, "y": 250.0, "bbox": [227.0, 227.0, 273.0, 273.0], "page_index": 0},
+        {"item_code": "LIGHT", "item_name": "조명기구", "x": 750.0, "y": 250.0, "bbox": [727.0, 227.0, 773.0, 273.0], "page_index": 0},
+        {"item_code": "LIGHT", "item_name": "조명기구", "x": 250.0, "y": 550.0, "bbox": [227.0, 527.0, 273.0, 573.0], "page_index": 0},
+        {"item_code": "LIGHT", "item_name": "조명기구", "x": 750.0, "y": 550.0, "bbox": [727.0, 527.0, 773.0, 573.0], "page_index": 0},
+        {"item_code": "OUTLET", "item_name": "전열 콘센트", "x": 120.0, "y": 250.0, "bbox": [105.0, 234.0, 135.0, 266.0], "page_index": 0},
+        {"item_code": "OUTLET", "item_name": "전열 콘센트", "x": 880.0, "y": 250.0, "bbox": [865.0, 234.0, 895.0, 266.0], "page_index": 0},
+        {"item_code": "SWITCH", "item_name": "스위치", "x": 460.0, "y": 380.0, "bbox": [448.0, 368.0, 472.0, 392.0], "page_index": 0},
+        {"item_code": "SWITCH", "item_name": "스위치", "x": 540.0, "y": 380.0, "bbox": [528.0, 368.0, 552.0, 392.0], "page_index": 0}
+      ]
+    },
+    "basic_devices.dxf": {
+      "source_type": "DXF",
+      "coordinate_space": "WORLD",
+      "symbols": [
+        {"item_code": "LIGHT", "block_name": "LT-DL", "x": 1000.0, "y": 2000.0, "bbox": [985.0, 1985.0, 1015.0, 2015.0], "page_index": 0},
+        {"item_code": "LIGHT", "block_name": "LT-DL", "x": 1000.0, "y": 4000.0, "bbox": [985.0, 3985.0, 1015.0, 4015.0], "page_index": 0},
+        {"item_code": "LIGHT", "block_name": "LT-DL", "x": 2000.0, "y": 2000.0, "bbox": [1985.0, 1985.0, 2015.0, 2015.0], "page_index": 0},
+        {"item_code": "LIGHT", "block_name": "LT-DL", "x": 2000.0, "y": 4000.0, "bbox": [1985.0, 3985.0, 2015.0, 4015.0], "page_index": 0},
+        {"item_code": "LIGHT", "block_name": "LT-DL", "x": 3000.0, "y": 2000.0, "bbox": [2985.0, 1985.0, 3015.0, 2015.0], "page_index": 0},
+        {"item_code": "LIGHT", "block_name": "LT-DL", "x": 3000.0, "y": 4000.0, "bbox": [2985.0, 3985.0, 3015.0, 4015.0], "page_index": 0},
+        {"item_code": "OUTLET", "block_name": "OT-2P", "x": 200.0, "y": 1000.0, "bbox": [185.0, 985.0, 215.0, 1015.0], "page_index": 0},
+        {"item_code": "OUTLET", "block_name": "OT-2P", "x": 200.0, "y": 5000.0, "bbox": [185.0, 4985.0, 215.0, 5015.0], "page_index": 0},
+        {"item_code": "OUTLET", "block_name": "OT-2P", "x": 3800.0, "y": 3000.0, "bbox": [3785.0, 2985.0, 3815.0, 3015.0], "page_index": 0},
+        {"item_code": "OUTLET", "block_name": "OT-2P", "x": 7800.0, "y": 3000.0, "bbox": [7785.0, 2985.0, 7815.0, 3015.0], "page_index": 0},
+        {"item_code": "SWITCH", "block_name": "SW-1", "x": 3800.0, "y": 500.0, "bbox": [3785.0, 485.0, 3815.0, 515.0], "page_index": 0},
+        {"item_code": "SWITCH", "block_name": "SW-1", "x": 4200.0, "y": 500.0, "bbox": [4185.0, 485.0, 4215.0, 515.0], "page_index": 0},
+        {"item_code": "SWITCH", "block_name": "SW-1", "x": 7500.0, "y": 500.0, "bbox": [7485.0, 485.0, 7515.0, 515.0], "page_index": 0}
+      ]
+    },
+    "pdf_c_vector_features.pdf": {
+      "source_type": "PDF",
+      "coordinate_space": "PDF_PAGE_POINT",
+      "symbols": [
+        {"item_code": "LIGHT", "text": "L-01", "x": 101.02, "y": 81.93, "bbox": [101.02, 81.93, 125.45, 92.15], "page_index": 0},
+        {"item_code": "PANEL", "text": "DB-1", "x": 101.08, "y": 121.93, "bbox": [101.08, 121.93, 129.33, 132.0], "page_index": 0},
+        {"item_code": "LIGHT", "text": "EM-LIGHT", "x": 251.11, "y": 121.81, "bbox": [251.11, 121.81, 316.61, 132.15], "page_index": 0},
+        {"item_code": "OUTLET", "text": "OUTLET-1", "x": 125.85, "y": 76.67, "bbox": [125.85, 76.67, 136.21, 141.11], "page_index": 1},
+        {"item_code": "SWITCH", "text": "SW-1", "x": 175.85, "y": 76.63, "bbox": [175.85, 76.63, 186.19, 142.92], "page_index": 1}
+      ]
+    }
+  }
+}

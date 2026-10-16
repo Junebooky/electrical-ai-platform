@@ -278,6 +278,13 @@ export interface DrawingSummary {
 
 export type CandidateStatus = "PROPOSED" | "ACCEPTED" | "REJECTED";
 
+export type DetectionSource =
+  | "DXF_BLOCK"
+  | "PDF_VECTOR_RULE"
+  | "IMAGE_TEMPLATE"
+  | "VISUAL_TEMPLATE"
+  | string;
+
 export interface SymbolCandidate {
   candidate_id: string;
   drawing_id: string;
@@ -289,7 +296,7 @@ export interface SymbolCandidate {
   suggested_item_code: string;
   suggested_item_name: string;
   confidence: number;
-  detection_source: "DXF_BLOCK" | "PDF_VECTOR_RULE" | "IMAGE_TEMPLATE" | string;
+  detection_source: DetectionSource;
   status: CandidateStatus;
   reviewed_item_code?: string | null;
   reviewed_at?: string | null;
@@ -321,6 +328,24 @@ export interface CandidatesResponse {
   drawing_id: string;
   summary: CandidatesSummary;
   candidates: SymbolCandidate[];
+}
+
+export interface SymbolSearchRequest {
+  sample_bbox: [number, number, number, number];
+  page_index?: number;
+  suggested_item_code?: string;
+  suggested_item_name?: string;
+  threshold?: number;
+  search_all_pages?: boolean;
+  max_results?: number;
+}
+
+export interface SymbolSearchResponse {
+  drawing_id: string;
+  page_index: number;
+  total_found: number;
+  candidates: SymbolCandidate[];
+  message?: string;
 }
 
 export interface MappingTemplate {
