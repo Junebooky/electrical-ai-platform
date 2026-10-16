@@ -30,7 +30,13 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, DecodedStreamObject, FloatObject, NameObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+)
 
 
 def generate_fixtures() -> None:
@@ -189,7 +195,75 @@ def generate_fixtures() -> None:
     print(f"Generated encrypted.pdf ({len(enc_bytes)} bytes, sha256={sha_enc[:8]}...)")
 
     # =========================================================================
-    # 7. expected.json & expected_takeoff.json
+    # 7. pdf_c_vector_features.pdf (PR C: Issue #22 Vector Text, Line, Shape features)
+    # =========================================================================
+    writer_c = PdfWriter()
+    fonts_c = DictionaryObject()
+    helv_c = DictionaryObject()
+    helv_c[NameObject("/Type")] = NameObject("/Font")
+    helv_c[NameObject("/Subtype")] = NameObject("/Type1")
+    helv_c[NameObject("/BaseFont")] = NameObject("/Helvetica")
+    fonts_c[NameObject("/F1")] = helv_c
+    res_c = DictionaryObject()
+    res_c[NameObject("/Font")] = fonts_c
+
+    # Page 0: 612 x 792 pt, ROT0
+    page_c0 = writer_c.add_blank_page(width=612.0, height=792.0)
+    page_c0[NameObject("/Resources")] = res_c
+    stream_c0 = DecodedStreamObject()
+    stream_c0.set_data(
+        b"q\n"
+        b"0 0 0 RG 2 w\n"
+        b"50 50 512 692 re s\n"
+        b"100 100 200 150 re s\n"
+        b"50 300 m 400 300 l s\n"
+        b"Q\n"
+        b"BT\n"
+        b"/F1 14 Tf\n"
+        b"100 700 Td\n"
+        b"(L-01) Tj\n"
+        b"0 -40 Td\n"
+        b"(DB-1) Tj\n"
+        b"150 0 Td\n"
+        b"(EM-LIGHT) Tj\n"
+        b"ET\n"
+    )
+    page_c0[NameObject("/Contents")] = writer_c._add_object(stream_c0)
+
+    # Page 1: 800 x 600 pt, CropBox [24, 24, 776, 576] (552x752), ROT90
+    page_c1 = writer_c.add_blank_page(width=800.0, height=600.0)
+    page_c1[NameObject("/CropBox")] = ArrayObject(
+        [FloatObject(24), FloatObject(24), FloatObject(776), FloatObject(576)]
+    )
+    page_c1.rotate(90)
+    page_c1[NameObject("/Resources")] = res_c
+    stream_c1 = DecodedStreamObject()
+    stream_c1.set_data(
+        b"q\n"
+        b"0 0 0 RG 2 w\n"
+        b"40 40 700 500 re s\n"
+        b"100 100 m 500 100 l s\n"
+        b"Q\n"
+        b"BT\n"
+        b"/F1 14 Tf\n"
+        b"100 150 Td\n"
+        b"(OUTLET-1) Tj\n"
+        b"0 50 Td\n"
+        b"(SWITCH-2) Tj\n"
+        b"ET\n"
+    )
+    page_c1[NameObject("/Contents")] = writer_c._add_object(stream_c1)
+
+    buf_c = io.BytesIO()
+    writer_c.write(buf_c)
+    c_bytes = buf_c.getvalue()
+    c_path = fixtures_dir / "pdf_c_vector_features.pdf"
+    c_path.write_bytes(c_bytes)
+    sha_c = hashlib.sha256(c_bytes).hexdigest()
+    print(f"Generated pdf_c_vector_features.pdf ({len(c_bytes)} bytes, sha256={sha_c[:8]}...)")
+
+    # =========================================================================
+    # 8. expected.json & expected_takeoff.json
     # =========================================================================
     expected_catalog: dict[str, Any] = {
         "version": "1.0.0",

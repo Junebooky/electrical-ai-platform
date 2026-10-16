@@ -287,6 +287,67 @@ def get_drawing_page_image(project_id: str, drawing_id: str, page_index: int) ->
     )
 
 
+@app.get("/api/projects/{project_id}/drawings/{drawing_id}/pages/{page_index}/features")
+def get_drawing_page_features(
+    project_id: str,
+    drawing_id: str,
+    page_index: int,
+) -> dict[str, Any]:
+    """Extract vector PDF text and path features for a specific page (PR C: Issue #22)."""
+    meta = storage.get_drawing_meta(project_id, drawing_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    if meta.get("source_type") != "PDF":
+        raise HTTPException(status_code=400, detail="PDF 도면만 벡터 피처(문자/선/도형) 추출을 지원합니다.")
+
+    page_count = int(meta.get("page_count", 1))
+    if page_index < 0 or page_index >= page_count:
+        raise HTTPException(
+            status_code=404,
+            detail=f"페이지 인덱스({page_index})가 범위를 벗어났습니다. (총 {page_count}페이지)",
+        )
+
+    # 1. Check cached features
+    cached = storage.get_drawing_page_features(project_id, drawing_id, page_index)
+    if cached is not None:
+        return cached
+
+    # 2. Extract on demand
+    raw_pdf_path = storage.get_raw_drawing_path(project_id, drawing_id)
+    if not raw_pdf_path or not raw_pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF 원본 파일을 찾을 수 없습니다.")
+
+    try:
+        from .pdf_features import extract_pdf_page_features
+
+        pdf_bytes = raw_pdf_path.read_bytes()
+        pages_info = meta.get("pages", [])
+        cb = None
+        rot = None
+        if isinstance(pages_info, list) and 0 <= page_index < len(pages_info):
+            p_data = pages_info[page_index]
+            if isinstance(p_data, dict):
+                cb = p_data.get("cropbox")
+                rot = p_data.get("rotation")
+
+        feats = extract_pdf_page_features(
+            pdf_bytes=pdf_bytes,
+            page_index=page_index,
+            drawing_id=drawing_id,
+            cropbox=cb,
+            rotation=rot,
+        )
+        data = feats.to_dict()
+        storage.save_drawing_page_features(project_id, drawing_id, page_index, data)
+        return data
+    except (PdfCorruptError, PdfPageLimitExceededError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except IndexError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"벡터 피처 추출 중 오류가 발생했습니다: {e}") from e
+
+
 @app.get("/api/projects/{project_id}/drawings/{drawing_id}/image")
 def get_drawing_image(project_id: str, drawing_id: str, page: int = Query(default=0, ge=0)) -> Response:
     meta = storage.get_drawing_meta(project_id, drawing_id)

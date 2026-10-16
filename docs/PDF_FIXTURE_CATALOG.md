@@ -37,6 +37,7 @@ uv run python scripts/generate_pdf_fixtures.py
 | `pdf_b_rotated_cropbox.pdf` (별칭 `pdf_b_02_rotated_cropbox.pdf`) | 625 | `a08db849b2fffcfa` | 1 | 90° 회전 및 비원점 CropBox `[50, 60, 550, 740]` 적용. 정규 좌표계(`PDF_PAGE_POINT`, 680×500 pt) 변환 및 화면 경계 검증 | SELF_GENERATED |
 | `pdf_b_scanned_mixed.pdf` | 24,439 | `31f62203716d1ba5` | 2 | 1페이지 스캔 도면(Pillow 래스터 이미지 임베딩), 2페이지 벡터 전기 도면. PR B의 "OCR 미지원 / 수동 마커 전용" 고지 배너 노출 및 래스터/벡터 페이지 모두 수동 마커 삽입 가능 검증 | SELF_GENERATED |
 | `pdf_b_oversized_dimension.pdf` | 435 | `b497560da1fc2194` | 1 | 12,000×12,000 pt (축당 10,000 px 및 40MP 초과). P0-03 리소스 DoS 방어 (HTTP 400 거부) 검증 | SELF_GENERATED |
+| `pdf_c_vector_features.pdf` | 1,183 | `a27d379555621817` | 2 | PR C 벡터 PDF 텍스트(`"L-01"`, `"DB-1"`, `"EM-LIGHT"`, `"OUTLET-1"`, `"SWITCH-2"`) 및 선/도형 바운딩 박스 추출 검증 | SELF_GENERATED |
 | `corrupt.pdf` | 94 | `1c404492bf285f57` | 0 (손상) | 비정상 헤더/바이트 누락 PDF. HTTP 400 Bad Request 및 명확한 에러 메시지 반환 검증 | SELF_GENERATED |
 | `encrypted.pdf` | 828 | `e64e1a896d84a7d4` | 1 (암호화) | `password123` 표준 암호화 적용 PDF. HTTP 400 거부 및 "암호화된 PDF는 지원하지 않습니다" 안내 검증 | SELF_GENERATED |
 
@@ -80,8 +81,23 @@ uv run python scripts/generate_pdf_fixtures.py
 - **마커 정답셋**:
   - Page 0 (래스터): `scan_m1` (`item_code: SWITCH`, `item_name: 스위치`, `x: 215.0`, `y: 215.0`, `unit: EA`)
   - Page 1 (벡터): `vec_m1` (`item_code: LIGHT`, `item_name: 조명`, `x: 325.0`, `y: 325.0`, `unit: EA`)
-- **예상 집계 결과**:
-  - 총 수량: **2 EA** (`SWITCH: 1 EA`, `LIGHT: 1 EA`, `is_provisional: true`)
+#### 4) `pdf_c_vector_features.pdf` (PR C: Issue #22)
+- **페이지 구성**:
+  - `page_index: 0`: 폭 612.0 pt, 높이 792.0 pt, 회전 0°, CropBox `[0, 0, 612, 792]`
+  - `page_index: 1`: 표시 폭 552.0 pt, 표시 높이 752.0 pt (원본 800×600 pt, CropBox `[24, 24, 776, 576]`, 회전 90°)
+- **추출 텍스트 정답셋 (Ground Truth Vector Texts)**:
+  - Page 0:
+    1. `"L-01"` (`txt_p0_0`): BBox `[101.02, 81.93, 125.45, 92.15] pt`
+    2. `"DB-1"` (`txt_p0_1`): BBox `[101.08, 121.93, 129.33, 132.00] pt`
+    3. `"EM-LIGHT"` (`txt_p0_2`): BBox `[251.11, 121.81, 316.61, 132.15] pt`
+  - Page 1:
+    4. `"OUTLET-1"` (`txt_p1_0`): BBox `[125.85, 76.67, 136.21, 141.11] pt`
+    5. `"SWITCH-2"` (`txt_p1_1`): BBox `[175.85, 76.63, 186.19, 142.92] pt`
+- **추출 선/도형 정답셋 (Ground Truth Vector Paths)**:
+  - Page 0: 사각형 2개, 직선 1개 (총 3개)
+  - Page 1: 사각형 1개, 직선 1개 (총 2개)
+- **도메인 불변식 검증**:
+  - 추출된 텍스트/경로는 근거(Evidence)로만 표기되며, 수동 마커가 없을 때 물량산출(Takeoff)은 **0 EA** 유지.
 
 ---
 

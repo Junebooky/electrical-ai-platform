@@ -1,0 +1,79 @@
+{
+  "version": "1.0.0",
+  "document": "pdf_c_vector_features.pdf",
+  "page_count": 2,
+  "pages": [
+    {
+      "page_index": 0,
+      "coordinate_space": "PDF_PAGE_POINT",
+      "display_width_pt": 612.0,
+      "display_height_pt": 792.0,
+      "rotation": 0,
+      "cropbox": [0.0, 0.0, 612.0, 792.0],
+      "texts": [
+        {
+          "source_object_id": "txt_p0_0",
+          "text": "L-01",
+          "bbox": [101.02, 81.93, 125.45, 92.15],
+          "x": 101.02,
+          "y": 81.93,
+          "page_index": 0,
+          "extraction_method": "PDF_TEXT",
+          "confidence": "RAW_VECTOR"
+        },
+        {
+          "source_object_id": "txt_p0_1",
+          "text": "DB-1",
+          "bbox": [101.08, 121.93, 129.33, 132.0],
+          "x": 101.08,
+          "y": 121.93,
+          "page_index": 0,
+          "extraction_method": "PDF_TEXT",
+          "confidence": "RAW_VECTOR"
+        },
+        {
+          "source_object_id": "txt_p0_2",
+          "text": "EM-LIGHT",
+          "bbox": [251.11, 121.81, 316.61, 132.15],
+          "x": 251.11,
+          "y": 121.81,
+          "page_index": 0,
+          "extraction_method": "PDF_TEXT",
+          "confidence": "RAW_VECTOR"
+        }
+      ],
+      "paths_count": 3
+    },
+    {
+      "page_index": 1,
+      "coordinate_space": "PDF_PAGE_POINT",
+      "display_width_pt": 552.0,
+      "display_height_pt": 752.0,
+      "rotation": 90,
+      "cropbox": [24.0, 24.0, 776.0, 576.0],
+      "texts": [
+        {
+          "source_object_id": "txt_p1_0",
+          "text": "OUTLET-1",
+          "bbox": [125.85, 76.67, 136.21, 141.11],
+          "x": 125.85,
+          "y": 76.67,
+          "page_index": 1,
+          "extraction_method": "PDF_TEXT",
+          "confidence": "RAW_VECTOR"
+        },
+        {
+          "source_object_id": "txt_p1_1",
+          "text": "SWITCH-2",
+          "bbox": [175.85, 76.63, 186.19, 142.92],
+          "x": 175.85,
+          "y": 76.63,
+          "page_index": 1,
+          "extraction_method": "PDF_TEXT",
+          "confidence": "RAW_VECTOR"
+        }
+      ],
+      "paths_count": 2
+    }
+  ]
+}

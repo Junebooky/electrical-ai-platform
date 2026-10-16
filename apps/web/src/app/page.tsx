@@ -10,6 +10,9 @@ import {
   SourceObject,
   TakeoffEvidenceRow,
   DrawingSummary,
+  PdfPageFeatures,
+  PdfTextFeature,
+  PdfPathFeature,
 } from "@/types/cad";
 import { CadViewer } from "@/components/CadViewer";
 import { MappingPanel } from "@/components/MappingPanel";
@@ -59,6 +62,12 @@ export default function WorkspacePage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pendingManualCoord, setPendingManualCoord] = useState<PendingManualMarker | null>(null);
 
+  // PR C: Vector PDF Text & Path Features
+  const [showFeatures, setShowFeatures] = useState<boolean>(false);
+  const [pageFeatures, setPageFeatures] = useState<PdfPageFeatures | null>(null);
+  const [selectedFeature, setSelectedFeature] = useState<PdfTextFeature | PdfPathFeature | null>(null);
+  const [isFeaturesLoading, setIsFeaturesLoading] = useState<boolean>(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef<number>(0);
   const refreshSeqRef = useRef<number>(0);
@@ -106,6 +115,8 @@ export default function WorkspacePage() {
         setCurrentDrawing(drawingData);
         setMappings(mappingRules);
         setCurrentPageIndex(0);
+        setSelectedFeature(null);
+        setPageFeatures(null);
         await refreshTakeoff(projectId, drawingId);
         setSelectedObjectId(null);
         setHighlightedItemCode(null);
@@ -262,13 +273,15 @@ export default function WorkspacePage() {
     });
   };
 
-  // Safe page navigation canceling pending marker on page switch (P0-01)
+  // Safe page navigation canceling pending marker on page switch (P0-01, Risk-2)
   const handlePageChange = (newIndex: number) => {
     if (pendingManualCoord) {
       setPendingManualCoord(null);
     }
     setCurrentPageIndex(newIndex);
     setSelectedObjectId(null);
+    setSelectedFeature(null);
+    setPageFeatures(null);
   };
 
   // Confirm manual object addition after mandatory item & reason selection
@@ -309,6 +322,35 @@ export default function WorkspacePage() {
       setIsSaving(false);
     }
   };
+
+  // Fetch vector features when toggled on or page changes (PR C)
+  useEffect(() => {
+    let isCancelled = false;
+    async function loadFeatures() {
+      if (!showFeatures || !currentProject || !currentDrawing || currentDrawing.source_type !== "PDF") {
+        setPageFeatures(null);
+        setSelectedFeature(null);
+        return;
+      }
+      setIsFeaturesLoading(true);
+      try {
+        const res = await api.getPageFeatures(currentProject.id, currentDrawing.drawing_id, currentPageIndex);
+        if (!isCancelled) {
+          setPageFeatures(res);
+        }
+      } catch (err) {
+        console.error("Failed to load page features:", err);
+      } finally {
+        if (!isCancelled) {
+          setIsFeaturesLoading(false);
+        }
+      }
+    }
+    loadFeatures();
+    return () => {
+      isCancelled = true;
+    };
+  }, [showFeatures, currentProject, currentDrawing, currentPageIndex]);
 
   // Delete Manual Object
   const handleDeleteManualObject = async (manualId: string) => {
@@ -507,35 +549,70 @@ export default function WorkspacePage() {
         <div className="bg-amber-950/70 border-b border-amber-800/60 px-4 py-2 text-xs text-amber-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded text-[10px] font-mono font-semibold">
-              PDF 모드 (PR B)
+              PDF 모드 (PR B/C)
             </span>
             <span>
               ※ PDF 도면을 표시했습니다. 기구 위치를 직접 표시해 주세요. (잠정 수량). 상단 <b>[누락 기구 수동 추가]</b> 활성화 후 도면을 클릭하여 각 페이지 좌표계(pt)에 마커(EA)를 등록합니다.
             </span>
           </div>
-          {currentDrawing.page_count && currentDrawing.page_count > 1 && (
-            <div className="flex items-center gap-2 bg-slate-900/80 px-2 py-1 rounded border border-slate-700">
-              <button
-                onClick={() => handlePageChange(Math.max(0, currentPageIndex - 1))}
-                disabled={Boolean(pendingManualCoord) || currentPageIndex <= 0}
-                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
-                title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "이전 페이지"}
-              >
-                ◀
-              </button>
-              <span className="font-mono font-medium text-xs text-slate-200">
-                {currentPageIndex + 1} / {currentDrawing.page_count} 페이지
-              </span>
-              <button
-                onClick={() => handlePageChange(Math.min((currentDrawing.page_count || 1) - 1, currentPageIndex + 1))}
-                disabled={Boolean(pendingManualCoord) || currentPageIndex >= (currentDrawing.page_count || 1) - 1}
-                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
-                title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "다음 페이지"}
-              >
-                ▶
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {/* Vector Features Toggle Button (PR C) */}
+            <button
+              onClick={() => {
+                setShowFeatures((prev) => {
+                  if (prev) {
+                    setPageFeatures(null);
+                    setSelectedFeature(null);
+                  }
+                  return !prev;
+                });
+              }}
+              className={`px-2.5 py-1 rounded text-xs transition flex items-center gap-1.5 font-medium border ${
+                showFeatures
+                  ? "bg-sky-600 hover:bg-sky-500 text-white border-sky-400 shadow-sm"
+                  : "bg-slate-900/90 hover:bg-slate-800 text-slate-300 border-slate-700"
+              }`}
+              title="PDF 원본 텍스트 및 선/도형 벡터 근거 하이라이트"
+            >
+              <span>{showFeatures ? "✓ 원문 근거 표시 중" : "원문 근거 보기"}</span>
+              {isFeaturesLoading ? (
+                <span className="text-[10px] text-sky-300 animate-pulse">로딩 중...</span>
+              ) : (
+                pageFeatures &&
+                pageFeatures.page_index === currentPageIndex &&
+                currentDrawing &&
+                pageFeatures.drawing_id === currentDrawing.drawing_id && (
+                  <span className="text-[10px] bg-sky-950/90 px-1 py-0.5 rounded text-sky-200 border border-sky-600/50">
+                    T:{pageFeatures.texts.length} P:{pageFeatures.paths.length}
+                  </span>
+                )
+              )}
+            </button>
+
+            {currentDrawing.page_count && currentDrawing.page_count > 1 && (
+              <div className="flex items-center gap-2 bg-slate-900/80 px-2 py-1 rounded border border-slate-700">
+                <button
+                  onClick={() => handlePageChange(Math.max(0, currentPageIndex - 1))}
+                  disabled={Boolean(pendingManualCoord) || currentPageIndex <= 0}
+                  className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
+                  title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "이전 페이지"}
+                >
+                  ◀
+                </button>
+                <span className="font-mono font-medium text-xs text-slate-200">
+                  {currentPageIndex + 1} / {currentDrawing.page_count} 페이지
+                </span>
+                <button
+                  onClick={() => handlePageChange(Math.min((currentDrawing.page_count || 1) - 1, currentPageIndex + 1))}
+                  disabled={Boolean(pendingManualCoord) || currentPageIndex >= (currentDrawing.page_count || 1) - 1}
+                  className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded text-xs transition"
+                  title={pendingManualCoord ? "마커 추가 중에는 페이지를 변경할 수 없습니다." : "다음 페이지"}
+                >
+                  ▶
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -606,7 +683,87 @@ export default function WorkspacePage() {
                     ? api.getImageUrl(currentProject.id, currentDrawing.drawing_id)
                     : null
                 }
+                features={
+                  pageFeatures &&
+                  pageFeatures.page_index === currentPageIndex &&
+                  currentDrawing &&
+                  pageFeatures.drawing_id === currentDrawing.drawing_id
+                    ? pageFeatures
+                    : null
+                }
+                showFeatures={showFeatures}
+                selectedFeatureId={selectedFeature?.source_object_id || null}
+                onSelectFeature={(feat) => {
+                  setSelectedFeature(feat);
+                  if (feat) setSelectedObjectId(null);
+                }}
               />
+
+              {/* Selected Vector Feature Inspection Card (PR C) */}
+              {selectedFeature &&
+                selectedFeature.page_index === currentPageIndex &&
+                currentDrawing && (
+                <div
+                  data-testid="selected-feature-card"
+                  className="absolute bottom-6 right-6 z-30 w-96 bg-slate-900/95 backdrop-blur-md border border-sky-500/50 rounded-xl shadow-2xl p-4 text-slate-200"
+                >
+                  <div className="flex items-start justify-between border-b border-slate-800 pb-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded text-xs font-semibold">
+                        {selectedFeature.extraction_method === "PDF_TEXT"
+                          ? "도면 원문 텍스트"
+                          : `도면 벡터 ${(selectedFeature as PdfPathFeature).type}`}
+                      </span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        P.{selectedFeature.page_index + 1}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedFeature(null)}
+                      className="text-slate-400 hover:text-white text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    {"text" in selectedFeature && (
+                      <div className="p-2.5 bg-slate-950/80 rounded border border-slate-800 font-mono text-sm text-sky-200 font-semibold break-all">
+                        {selectedFeature.text}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2 text-slate-400">
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">객체 ID</span>
+                        <span className="font-mono text-slate-300">{selectedFeature.source_object_id}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">추출 방식</span>
+                        <span className="font-mono text-slate-300">{selectedFeature.extraction_method}</span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">바운딩 박스 (pt)</span>
+                        <span className="font-mono text-slate-300">[{selectedFeature.bbox.join(", ")}]</span>
+                      </div>
+                    </div>
+
+                    <div className="p-2 bg-amber-950/40 border border-amber-800/40 rounded text-[11px] text-amber-300/90 leading-relaxed">
+                      ℹ️ <b>도메인 불변식</b>: 원문 도면에서 추출된 벡터 근거입니다. 전기설비 설치 수량(EA)으로 자동 산출되지 않으며, 사용자 수동 마커 지정을 통해서만 물량에 반영됩니다.
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        handleAddManualPoint(selectedFeature.x, selectedFeature.y);
+                        setSelectedFeature(null);
+                      }}
+                      className="w-full mt-2 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium text-xs flex items-center justify-center gap-1.5 transition shadow"
+                    >
+                      <Plus size={14} />
+                      <span>이 위치에 수동 기구 마커 추가 (1 EA)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Floating Review Drawer when object is selected */}
               <ReviewDrawer
