@@ -97,6 +97,8 @@ class Storage:
         file_type: str = "DXF",
         coordinate_space: str = "WORLD",
         dimensions: dict[str, int] | None = None,
+        page_count: int = 1,
+        pages: list[dict[str, object]] | None = None,
     ) -> Path:
         d_dir = self.projects_dir / project_id / "drawings" / drawing.drawing_id
         d_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +109,11 @@ class Storage:
 
         # 2. save raw bytes if provided (FR-002, QA-DEF-01)
         raw_saved = False
-        raw_filename = f"raw.{file_type.lower()}" if file_type.lower() in ("png", "jpg", "jpeg") else "raw.dxf"
+        raw_filename = (
+            f"raw.{file_type.lower()}"
+            if file_type.lower() in ("png", "jpg", "jpeg", "pdf")
+            else "raw.dxf"
+        )
         if raw_bytes is not None:
             raw_file = d_dir / raw_filename
             raw_file.write_bytes(raw_bytes)
@@ -132,6 +138,8 @@ class Storage:
             "file_type": file_type,
             "coordinate_space": coordinate_space,
             "dimensions": dimensions,
+            "page_count": page_count,
+            "pages": pages,
         }
         self._save_json(d_dir / "meta.json", meta)
 
@@ -142,6 +150,20 @@ class Storage:
             self._save_json(d_dir / "reviews.json", {})
         if not (d_dir / "manual_objects.json").exists():
             self._save_json(d_dir / "manual_objects.json", [])
+
+        # 5. Pre-render and cache PDF pages on demand (safe DoS bounds)
+        if source_type == "PDF" and raw_bytes is not None:
+            pages_dir = d_dir / "pages"
+            pages_dir.mkdir(parents=True, exist_ok=True)
+            for idx in range(min(page_count, 50)):
+                page_img_path = pages_dir / f"page_{idx}.png"
+                if not page_img_path.exists():
+                    try:
+                        from .pdf_parser import render_pdf_page_image
+                        png_bytes, _, _ = render_pdf_page_image(raw_bytes, idx)
+                        page_img_path.write_bytes(png_bytes)
+                    except Exception:
+                        pass
 
         return d_dir
 
@@ -158,10 +180,31 @@ class Storage:
                         return p
             except Exception:
                 pass
-        for name in ("raw.dxf", "raw.png", "raw.jpg", "raw.jpeg"):
+        for name in ("raw.dxf", "raw.png", "raw.jpg", "raw.jpeg", "raw.pdf"):
             raw_file = d_dir / name
             if raw_file.exists():
                 return raw_file
+        return None
+
+    def get_drawing_page_image_path(
+        self, project_id: str, drawing_id: str, page_index: int = 0
+    ) -> Path | None:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        page_img = d_dir / "pages" / f"page_{page_index}.png"
+        if page_img.exists():
+            return page_img
+        # On-demand fallback: if raw.pdf exists, render page now
+        raw_pdf = d_dir / "raw.pdf"
+        if raw_pdf.exists():
+            try:
+                from .pdf_parser import render_pdf_page_image
+                png_bytes, _, _ = render_pdf_page_image(raw_pdf.read_bytes(), page_index)
+                pages_dir = d_dir / "pages"
+                pages_dir.mkdir(parents=True, exist_ok=True)
+                page_img.write_bytes(png_bytes)
+                return page_img
+            except Exception:
+                pass
         return None
 
     def get_drawing_image_path(self, project_id: str, drawing_id: str) -> Path | None:
@@ -170,7 +213,8 @@ class Storage:
             p = d_dir / name
             if p.exists():
                 return p
-        return None
+        # For PDF drawing, return page 0 image
+        return self.get_drawing_page_image_path(project_id, drawing_id, 0)
 
     def list_drawings(self, project_id: str) -> list[DrawingSummary]:
         d_root = self.projects_dir / project_id / "drawings"
@@ -195,7 +239,22 @@ class Storage:
         if not d_file.exists():
             return None
         data = json.loads(d_file.read_text(encoding="utf-8"))
-        return NormalizedDrawing(**data)
+        nd = NormalizedDrawing(**data)
+        meta = self.get_drawing_meta(project_id, drawing_id)
+        if meta:
+            if meta.get("page_count"):
+                nd.page_count = int(meta["page_count"])
+            if meta.get("pages"):
+                nd.pages = meta["pages"]
+            if meta.get("source_type"):
+                nd.source_type = str(meta["source_type"])
+            if meta.get("file_type"):
+                nd.file_type = str(meta["file_type"])
+            if meta.get("coordinate_space"):
+                nd.coordinate_space = str(meta["coordinate_space"])
+            if meta.get("dimensions"):
+                nd.dimensions = meta["dimensions"]
+        return nd
 
     def get_drawing_meta(self, project_id: str, drawing_id: str) -> dict[str, Any] | None:
         meta_file = self.projects_dir / project_id / "drawings" / drawing_id / "meta.json"
@@ -362,6 +421,10 @@ def build_takeoff_result(
     is_image_dwg = (
         getattr(drawing, "source_type", None) == "IMAGE"
         or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    )
+    is_pdf_dwg = (
+        getattr(drawing, "source_type", None) == "PDF"
+        or getattr(drawing, "coordinate_space", None) == "PDF_PAGE_POINT"
     )
 
     # Map item code to canonical metadata and detect cross-mapping attribute conflicts (ADR-005)
@@ -552,6 +615,10 @@ def build_takeoff_result(
                 inclusion_status=st["inc_status"],
                 review_status=st["rev_status"],
                 review_reason=st["reason"],
+                page_index=None,
+                source_type="IMAGE" if is_image_dwg else "DXF",
+                file_type=getattr(drawing, "file_type", "IMAGE" if is_image_dwg else "DXF"),
+                coordinate_space="IMAGE_PIXEL" if is_image_dwg else "WORLD",
             )
         )
 
@@ -588,6 +655,41 @@ def build_takeoff_result(
             elif effective_code in item_meta and (item_meta[effective_code].unit or "").strip() != "EA":
                 is_conflicted = True
                 conflict_reason = f"이미지 도면 품목('{effective_code}') 매핑 단위('{item_meta[effective_code].unit}') 비EA 불허 (IMG-03)"
+        elif is_pdf_dwg:
+            page_idx = getattr(mo, "page_index", 0) or 0
+            pages_list = getattr(drawing, "pages", None)
+            if not pages_list:
+                pages_list = meta.get("pages") or []
+            page_cnt = int(getattr(drawing, "page_count", len(pages_list)) or len(pages_list) or 1)
+
+            if page_idx < 0 or page_idx >= page_cnt:
+                is_conflicted = True
+                conflict_reason = (
+                    f"PDF 도면 페이지 인덱스(page_index={page_idx}) 유효 범위([0, {page_cnt})) 이탈 (PR B)"
+                )
+            else:
+                p_meta = pages_list[page_idx] if page_idx < len(pages_list) else None
+                if p_meta:
+                    page_w = float(p_meta.get("display_width_pt") or 0.0)
+                    page_h = float(p_meta.get("display_height_pt") or 0.0)
+                else:
+                    dims = getattr(drawing, "dimensions", None) or {}
+                    page_w = float(dims.get("width") or (drawing.extents.max[0] if drawing.extents else 595.0))
+                    page_h = float(dims.get("height") or (drawing.extents.max[1] if drawing.extents else 842.0))
+
+                is_coord_finite = math.isfinite(mo.x) and math.isfinite(mo.y)
+                if not is_coord_finite or mo.x < 0.0 or mo.x >= page_w or mo.y < 0.0 or mo.y >= page_h:
+                    is_conflicted = True
+                    conflict_reason = (
+                        f"PDF 도면 페이지({page_idx}) pt 유효 범위([0, {page_w:.1f}) × [0, {page_h:.1f})) 이탈/비유한 좌표"
+                        f"(x={mo.x}, y={mo.y}) - 수량 산출 보류 (PR B)"
+                    )
+                elif mo_u != "EA":
+                    is_conflicted = True
+                    conflict_reason = f"PDF 도면 수동 기구 단위('{mo.unit}') 비EA 불허 (M-UNIT-01: EA 전용)"
+                elif effective_code in item_meta and (item_meta[effective_code].unit or "").strip() != "EA":
+                    is_conflicted = True
+                    conflict_reason = f"PDF 도면 품목('{effective_code}') 매핑 단위('{item_meta[effective_code].unit}') 비EA 불허"
         elif base_item_code in conflicted_codes:
             is_conflicted = True
             conflict_reason = f"수동 추가 기구 단위('{mo.unit}') 상충/결함 (P0 비EA 또는 단위 불일치)"
@@ -631,6 +733,10 @@ def build_takeoff_result(
                 inclusion_status=inc_status,
                 review_status=rev_status,
                 review_reason=reason,
+                page_index=getattr(mo, "page_index", 0) if is_pdf_dwg else None,
+                source_type="PDF" if is_pdf_dwg else ("IMAGE" if is_image_dwg else "DXF"),
+                file_type=getattr(drawing, "file_type", "PDF" if is_pdf_dwg else ("IMAGE" if is_image_dwg else "DXF")),
+                coordinate_space="PDF_PAGE_POINT" if is_pdf_dwg else ("IMAGE_PIXEL" if is_image_dwg else "WORLD"),
             )
         )
 
@@ -714,6 +820,12 @@ def build_takeoff_result(
                 qty = 0
                 r_status = ReviewStatus.UNRESOLVED
                 notes = f"이미지 도면 단위('{unit}') 비EA 불허 (IMG-03/M-UNIT-01: EA 전용) - 수량 산출 보류"
+            elif is_pdf_dwg and unit.strip() != "EA":
+                qty = 0
+                r_status = ReviewStatus.UNRESOLVED
+                notes = f"PDF 도면 단위('{unit}') 비EA 불허 (PR B/M-UNIT-01: EA 전용) - 수량 산출 보류"
+            elif is_pdf_dwg and not notes:
+                notes = "PDF 수동 적산 잠정 수량 (PR B)"
 
         summary_rows.append(
             TakeoffSummaryRow(
@@ -727,6 +839,7 @@ def build_takeoff_result(
                 drawing_name=drawing_name,
                 drawing_revision=revision,
                 notes=notes,
+                is_provisional=is_pdf_dwg,
             )
         )
 
@@ -740,9 +853,11 @@ def build_takeoff_result(
     # In P0 (DEC-011 / Issue #9), drawings lack formal legend/count_scope verification.
     # Therefore, takeoffs remain provisional (is_provisional = True) by default
     # unless explicit certified count scope metadata is present.
+    # For PDF drawings in PR B, all quantities are strictly provisional ("잠정 수량").
     is_count_scope_verified = bool(meta.get("count_scope_verified", False))
     is_provisional = (
-        not is_count_scope_verified
+        is_pdf_dwg
+        or not is_count_scope_verified
         or (unresolved_count > 0)
         or any(s.review_status != ReviewStatus.REVIEWED for s in summary_rows)
     )

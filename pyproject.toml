@@ -45,7 +45,7 @@ plugins = ["pydantic.mypy"]
 files = ["packages/cad_engine/src", "apps/api/src"]
 
 [[tool.mypy.overrides]]
-module = ["ezdxf", "ezdxf.*", "openpyxl", "openpyxl.*"]
+module = ["ezdxf", "ezdxf.*", "openpyxl", "openpyxl.*", "pypdf", "pypdf.*", "pypdfium2", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

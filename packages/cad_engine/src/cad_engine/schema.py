@@ -186,3 +186,5 @@ class NormalizedDrawing(_Model):
     file_type: str = "DXF"
     coordinate_space: str = "WORLD"
     dimensions: dict[str, int] | None = None
+    page_count: int = 1
+    pages: list[dict[str, object]] | None = None

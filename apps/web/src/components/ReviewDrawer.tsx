@@ -45,8 +45,13 @@ function ReviewDrawerContent({
   sourceType,
   coordinateSpace,
 }: ContentProps) {
-  const isImageCoordinate = sourceType === "IMAGE" || coordinateSpace === "IMAGE_PIXEL";
-  const coordLabel = isImageCoordinate ? "이미지 좌표 (px)" : "CAD 좌표 (WCS)";
+  const isPdfCoordinate = sourceType === "PDF" || coordinateSpace === "PDF_PAGE_POINT" || evidence?.source_type === "PDF";
+  const isImageCoordinate = sourceType === "IMAGE" || coordinateSpace === "IMAGE_PIXEL" || evidence?.source_type === "IMAGE";
+  const coordLabel = isPdfCoordinate
+    ? `PDF 페이지 좌표 (pt)${evidence?.page_index !== undefined && evidence.page_index !== null ? ` [P.${evidence.page_index + 1}]` : ""}`
+    : isImageCoordinate
+    ? "이미지 좌표 (px)"
+    : "CAD 좌표 (WCS)";
 
   const isManual =
     evidence?.inclusion_status === "MANUAL_ADDED" ||

@@ -60,12 +60,20 @@ class ManualObjectItem(BaseModel):
     unit: str = "EA"
     note: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    page_index: int = 0
 
     @field_validator("x", "y")
     @classmethod
     def validate_finite_coords(cls, v: float) -> float:
         if not math.isfinite(v):
             raise ValueError("좌표값은 유한한 실수(finite float)여야 하며 NaN이나 무한대(Inf)일 수 없습니다.")
+        return v
+
+    @field_validator("page_index")
+    @classmethod
+    def validate_page_index(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("page_index는 0 이상의 정수(0-based)여야 합니다.")
         return v
 
 
@@ -81,6 +89,7 @@ class TakeoffSummaryRow(BaseModel):
     drawing_name: str
     drawing_revision: str
     notes: str
+    is_provisional: bool = False
 
 
 class TakeoffEvidenceRow(BaseModel):
@@ -96,6 +105,10 @@ class TakeoffEvidenceRow(BaseModel):
     inclusion_status: InclusionStatus
     review_status: ReviewStatus
     review_reason: str
+    page_index: int | None = None
+    source_type: str | None = None
+    file_type: str | None = None
+    coordinate_space: str | None = None
 
 
 class TakeoffResult(BaseModel):
@@ -139,3 +152,5 @@ class DrawingSummary(BaseModel):
     file_type: str = "DXF"
     coordinate_space: str = "WORLD"
     dimensions: dict[str, int] | None = None
+    page_count: int = 1
+    pages: list[dict[str, object]] | None = None

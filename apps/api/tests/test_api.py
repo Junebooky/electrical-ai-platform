@@ -509,6 +509,10 @@ def test_export_formula_injection_defense(client: TestClient) -> None:
         "review_reason",
         "drawing_revision",
         "exported_at",
+        "page_index",
+        "source_type",
+        "file_type",
+        "coordinate_space",
     ]
     # First row reason must have leading quote escape
     row_ev = reader_ev[1]

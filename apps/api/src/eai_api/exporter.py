@@ -99,6 +99,10 @@ def export_csv_evidence(result: TakeoffResult) -> bytes:
         "review_reason",
         "drawing_revision",
         "exported_at",
+        "page_index",
+        "source_type",
+        "file_type",
+        "coordinate_space",
     ])
     exported_at_str = result.exported_at.isoformat()
     for row in result.evidence:
@@ -117,6 +121,10 @@ def export_csv_evidence(result: TakeoffResult) -> bytes:
             sanitize_cell(row.review_reason),
             sanitize_cell(result.drawing_revision),
             sanitize_cell(exported_at_str),
+            row.page_index if row.page_index is not None else "",
+            sanitize_cell(row.source_type or ""),
+            sanitize_cell(row.file_type or ""),
+            sanitize_cell(row.coordinate_space or ""),
         ])
     return buf.getvalue().encode("utf-8-sig")
 
@@ -217,6 +225,10 @@ def export_xlsx(result: TakeoffResult) -> bytes:
         "검수·산출 사유 (review_reason)",
         "REV",
         "내보내기 시각 (exported_at)",
+        "페이지 번호 (page_index)",
+        "도면 유형 (source_type)",
+        "파일 유형 (file_type)",
+        "좌표계 (coordinate_space)",
     ]
     ws_ev.append(evidence_headers)
     for col_num in range(1, len(evidence_headers) + 1):
@@ -241,6 +253,10 @@ def export_xlsx(result: TakeoffResult) -> bytes:
             sanitize_cell(ev.review_reason),
             sanitize_cell(result.drawing_revision),
             sanitize_cell(exported_at_str),
+            ev.page_index if ev.page_index is not None else "",
+            sanitize_cell(ev.source_type or ""),
+            sanitize_cell(ev.file_type or ""),
+            sanitize_cell(ev.coordinate_space or ""),
         ])
         curr_row = ws_ev.max_row
         for col_num in range(1, len(evidence_headers) + 1):
@@ -248,7 +264,7 @@ def export_xlsx(result: TakeoffResult) -> bytes:
             c.font = data_font
             if isinstance(c.value, str) and c.value.startswith("'"):
                 c.data_type = "s"
-            if col_num in (6, 9, 10, 11, 13, 14):
+            if col_num in (6, 9, 10, 11, 13, 14, 15, 16, 17, 18):
                 c.alignment = align_center
             elif col_num in (7, 8):
                 c.alignment = align_right
