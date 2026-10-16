@@ -197,6 +197,28 @@ class Storage:
             return page_img
         return None
 
+    def get_drawing_page_features(
+        self, project_id: str, drawing_id: str, page_index: int
+    ) -> dict[str, Any] | None:
+        feat_path = (
+            self.projects_dir
+            / project_id
+            / "drawings"
+            / drawing_id
+            / "features"
+            / f"page_{page_index}.json"
+        )
+        if feat_path.exists():
+            return cast(dict[str, Any], json.loads(feat_path.read_text(encoding="utf-8")))
+        return None
+
+    def save_drawing_page_features(
+        self, project_id: str, drawing_id: str, page_index: int, features: dict[str, Any]
+    ) -> None:
+        feat_dir = self.projects_dir / project_id / "drawings" / drawing_id / "features"
+        feat_dir.mkdir(parents=True, exist_ok=True)
+        self._save_json(feat_dir / f"page_{page_index}.json", features)
+
     def get_drawing_image_path(self, project_id: str, drawing_id: str) -> Path | None:
         d_dir = self.projects_dir / project_id / "drawings" / drawing_id
         for name in ("raw.png", "raw.jpg", "raw.jpeg"):

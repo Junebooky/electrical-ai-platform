@@ -6,6 +6,7 @@ import {
   ProjectMetadata,
   DrawingSummary,
   TakeoffResult,
+  PdfPageFeatures,
 } from "@/types/cad";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -174,6 +175,17 @@ export const api = {
 
   getPageImageUrl: (projectId: string, drawingId: string, pageIndex: number): string => {
     return `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/pages/${pageIndex}/image`;
+  },
+
+  getPageFeatures: async (
+    projectId: string,
+    drawingId: string,
+    pageIndex: number
+  ): Promise<PdfPageFeatures> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/pages/${pageIndex}/features`
+    );
+    return handleResponse(res);
   },
 
   getRawUrl: (projectId: string, drawingId: string): string => {

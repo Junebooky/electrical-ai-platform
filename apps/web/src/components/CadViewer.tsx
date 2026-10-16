@@ -1,7 +1,12 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { NormalizedDrawing } from "@/types/cad";
+import {
+  NormalizedDrawing,
+  PdfPageFeatures,
+  PdfTextFeature,
+  PdfPathFeature,
+} from "@/types/cad";
 import { ZoomIn, ZoomOut, Maximize2, PlusCircle } from "lucide-react";
 
 export interface ManualMarker {
@@ -26,6 +31,10 @@ interface CadViewerProps {
   manualMarkers?: ManualMarker[];
   imageUrl?: string | null;
   currentPageIndex?: number;
+  features?: PdfPageFeatures | null;
+  showFeatures?: boolean;
+  selectedFeatureId?: string | null;
+  onSelectFeature?: (feature: PdfTextFeature | PdfPathFeature | null) => void;
 }
 
 export function CadViewer({
@@ -40,6 +49,10 @@ export function CadViewer({
   manualMarkers = [],
   imageUrl,
   currentPageIndex = 0,
+  features = null,
+  showFeatures = false,
+  selectedFeatureId = null,
+  onSelectFeature,
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -178,7 +191,7 @@ export function CadViewer({
       if (isAddManualMode && dist < 6 && onAddManualPoint && containerRef.current) {
         const target = e.target as HTMLElement | SVGElement | null;
         const isToolbar = Boolean(target?.closest("button, .viewer-controls, [data-interactive='true']"));
-        const isMarker = Boolean(target?.closest("g.cursor-pointer, .interactive-marker"));
+        const isMarker = Boolean(target?.closest("g.cursor-pointer, .interactive-marker, .interactive-feature"));
         if (!isToolbar && !isMarker) {
           const rect = containerRef.current.getBoundingClientRect();
           const mouseX = e.clientX - rect.left;
@@ -544,6 +557,88 @@ export function CadViewer({
               </g>
             );
           })}
+
+          {/* PR C: Vector PDF Text & Path Features Overlay */}
+          {isPdf && showFeatures && features && (
+            <g className="pdf-vector-features">
+              {/* Paths / Lines / Rects */}
+              {features.paths.map((p) => {
+                const isSelected = p.source_object_id === selectedFeatureId;
+                const bw = Math.max(p.bbox[2] - p.bbox[0], 2);
+                const bh = Math.max(p.bbox[3] - p.bbox[1], 2);
+                const strokeColor =
+                  p.type === "line" ? "#06b6d4" : p.type === "rect" ? "#10b981" : "#a855f7";
+                return (
+                  <g
+                    key={p.source_object_id}
+                    data-testid={`pdf-feature-${p.source_object_id}`}
+                    className="pointer-events-auto cursor-pointer interactive-feature"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectFeature?.(p);
+                    }}
+                  >
+                    <rect
+                      x={p.bbox[0]}
+                      y={p.bbox[1]}
+                      width={bw}
+                      height={bh}
+                      fill={
+                        isSelected ? "rgba(56, 189, 248, 0.25)" : "rgba(16, 185, 129, 0.05)"
+                      }
+                      stroke={isSelected ? "#38bdf8" : strokeColor}
+                      strokeWidth={(isSelected ? 2.5 : 1) / Math.max(scale, 1e-6)}
+                      strokeDasharray={p.type === "line" ? `${4 / scale},${2 / scale}` : undefined}
+                      className={isSelected ? "animate-pulse" : ""}
+                    />
+                  </g>
+                );
+              })}
+
+              {/* Texts */}
+              {features.texts.map((t) => {
+                const isSelected = t.source_object_id === selectedFeatureId;
+                const bw = Math.max(t.bbox[2] - t.bbox[0], 4);
+                const bh = Math.max(t.bbox[3] - t.bbox[1], 4);
+                return (
+                  <g
+                    key={t.source_object_id}
+                    data-testid={`pdf-feature-${t.source_object_id}`}
+                    className="pointer-events-auto cursor-pointer interactive-feature"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectFeature?.(t);
+                    }}
+                  >
+                    <rect
+                      x={t.bbox[0]}
+                      y={t.bbox[1]}
+                      width={bw}
+                      height={bh}
+                      fill={
+                        isSelected ? "rgba(56, 189, 248, 0.35)" : "rgba(56, 189, 248, 0.12)"
+                      }
+                      stroke={isSelected ? "#38bdf8" : "#0284c7"}
+                      strokeWidth={(isSelected ? 2 : 1) / Math.max(scale, 1e-6)}
+                      className={isSelected ? "animate-pulse" : ""}
+                    />
+                    <text
+                      x={t.bbox[0]}
+                      y={t.bbox[1] - 2 / Math.max(scale, 1e-6)}
+                      fontSize={Math.max(8 / Math.max(scale, 1e-6), 4)}
+                      fill={isSelected ? "#38bdf8" : "#7dd3fc"}
+                      className="font-mono font-medium pointer-events-none select-none"
+                      style={{ textShadow: "0 1px 2px rgba(0,0,0,0.9)" }}
+                    >
+                      {t.text}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          )}
         </g>
       </svg>
     </div>

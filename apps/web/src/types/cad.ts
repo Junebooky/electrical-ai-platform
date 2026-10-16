@@ -99,6 +99,40 @@ export interface PdfPageInfo {
   rendered_height_px?: number;
 }
 
+export interface PdfTextFeature {
+  source_object_id: string;
+  text: string;
+  bbox: [number, number, number, number];
+  x: number;
+  y: number;
+  page_index: number;
+  extraction_method: "PDF_TEXT";
+  confidence?: string;
+}
+
+export interface PdfPathFeature {
+  source_object_id: string;
+  type: "line" | "rect" | "path";
+  bbox: [number, number, number, number];
+  x: number;
+  y: number;
+  page_index: number;
+  extraction_method: "PDF_PATH";
+}
+
+export interface PdfPageFeatures {
+  drawing_id: string;
+  page_index: number;
+  coordinate_space: "PDF_PAGE_POINT";
+  display_width_pt: number;
+  display_height_pt: number;
+  rotation: number;
+  cropbox?: number[];
+  texts: PdfTextFeature[];
+  paths: PdfPathFeature[];
+  warnings: string[];
+}
+
 export interface NormalizedDrawing {
   schema_version: string;
   drawing_id: string;
