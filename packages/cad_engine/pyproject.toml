@@ -1,0 +1,19 @@
+[project]
+name = "eai-cad-engine"
+version = "0.1.0"
+description = "Deterministic DXF parsing and normalization engine for the Electrical AI Platform"
+requires-python = ">=3.12"
+dependencies = [
+    "ezdxf>=1.4.2,<2",
+    "pydantic>=2.11,<3",
+]
+
+[project.scripts]
+eai-cad = "cad_engine.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cad_engine"]

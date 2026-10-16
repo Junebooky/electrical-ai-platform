@@ -1,0 +1,599 @@
+export type Point2 = [number, number];
+
+export type WarningCode =
+  | "UNITS_UNDEFINED"
+  | "XREF_UNRESOLVED"
+  | "ANONYMOUS_BLOCK"
+  | "DYNAMIC_BLOCK"
+  | "NESTED_BLOCK"
+  | "NESTING_TOO_DEEP"
+  | "CIRCULAR_BLOCK_REFERENCE"
+  | "MINSERT_EXPANDED"
+  | "HIDDEN_LAYER"
+  | "MISSING_BLOCK_DEFINITION"
+  | "PAPER_SPACE_IGNORED"
+  | "UNSUPPORTED_ENTITY"
+  | "EMPTY_MODELSPACE"
+  | "AUDIT_FIXES_APPLIED"
+  | "AUDIT_ERRORS"
+  | "GEOMETRY_ERROR"
+  | "PRIMITIVE_LIMIT_REACHED";
+
+export interface DrawingWarning {
+  code: WarningCode;
+  severity: "INFO" | "WARNING" | "ERROR";
+  message: string;
+  object_ids: string[];
+  details: Record<string, unknown>;
+}
+
+export interface BBox {
+  min: Point2;
+  max: Point2;
+}
+
+export interface LayerInfo {
+  name: string;
+  color: number;
+  is_off: boolean;
+  is_frozen: boolean;
+  is_locked: boolean;
+  object_count: number;
+}
+
+export interface BlockInfo {
+  name: string;
+  effective_name: string;
+  is_xref: boolean;
+  is_anonymous: boolean;
+  is_dynamic_reference: boolean;
+  base_point: [number, number, number];
+  entity_count: number;
+  top_level_insert_count: number;
+  nested_insert_count: number;
+}
+
+export interface SourceObject {
+  id: string;
+  drawing_id: string;
+  raw_handle: string;
+  insert_path: string[];
+  parent_id: string | null;
+  depth: number;
+  entity_type: string;
+  layer: string;
+  visible: boolean;
+  block_name?: string | null;
+  effective_block_name?: string | null;
+  insert_point?: Point2 | null;
+  rotation_deg?: number | null;
+  scale?: [number, number, number] | null;
+  bbox?: BBox | null;
+  attributes: Record<string, string>;
+  text?: string | null;
+  geometric_length?: number | null;
+  is_count_candidate: boolean;
+  warnings: WarningCode[];
+}
+
+export interface Primitive {
+  object_id: string;
+  kind: "polyline" | "text";
+  layer: string;
+  color: string;
+  points: Point2[];
+  closed?: boolean;
+  text?: string | null;
+  height?: number | null;
+  rotation_deg?: number | null;
+}
+
+export interface PdfPageInfo {
+  page_index: number;
+  display_width_pt: number;
+  display_height_pt: number;
+  rotation: number;
+  cropbox?: number[];
+  mediabox?: number[];
+  rendered_width_px?: number;
+  rendered_height_px?: number;
+}
+
+export interface PdfTextFeature {
+  source_object_id: string;
+  text: string;
+  bbox: [number, number, number, number];
+  x: number;
+  y: number;
+  page_index: number;
+  extraction_method: "PDF_TEXT";
+  confidence?: string;
+}
+
+export interface PdfPathFeature {
+  source_object_id: string;
+  type: "line" | "rect" | "path";
+  bbox: [number, number, number, number];
+  x: number;
+  y: number;
+  page_index: number;
+  extraction_method: "PDF_PATH";
+}
+
+export interface PdfPageFeatures {
+  drawing_id: string;
+  page_index: number;
+  coordinate_space: "PDF_PAGE_POINT";
+  display_width_pt: number;
+  display_height_pt: number;
+  rotation: number;
+  cropbox?: number[];
+  texts: PdfTextFeature[];
+  paths: PdfPathFeature[];
+  warnings: string[];
+}
+
+export interface NormalizedDrawing {
+  schema_version: string;
+  drawing_id: string;
+  source: {
+    filename: string;
+    sha256: string;
+    size_bytes: number;
+  };
+  dxf: {
+    version: string;
+    release: string;
+    encoding: string;
+    insunits: number;
+    units_name: string;
+    units_defined: boolean;
+    measurement: number | null;
+  };
+  extents: BBox | null;
+  layers: LayerInfo[];
+  blocks: BlockInfo[];
+  objects: SourceObject[];
+  primitives: Primitive[];
+  warnings: DrawingWarning[];
+  stats: {
+    modelspace_entities: number;
+    paperspace_entities: number;
+    source_objects: number;
+    primitives: number;
+    primitive_points: number;
+    parse_ms: number;
+  };
+  source_type?: "DXF" | "IMAGE" | "PDF";
+  file_type?: string;
+  coordinate_space?: string;
+  dimensions?: { width: number; height: number };
+  page_count?: number;
+  pages?: PdfPageInfo[];
+}
+
+export interface ItemMappingRule {
+  block_name: string;
+  layer?: string | null;
+  item_code: string;
+  item_name?: string | null;
+  specification?: string | null;
+  unit: string;
+}
+
+export interface EvidenceReviewItem {
+  source_object_id: string;
+  inclusion_status: "INCLUDED" | "EXCLUDED" | "MANUAL_ADDED";
+  mapped_item_code?: string | null;
+  review_status: "UNREVIEWED" | "REVIEWED" | "UNRESOLVED";
+  reason: string;
+  updated_at?: string;
+}
+
+export interface ManualObjectItem {
+  id: string;
+  drawing_id: string;
+  x: number;
+  y: number;
+  item_code: string;
+  item_name?: string | null;
+  unit: string;
+  note: string;
+  created_at?: string;
+  page_index?: number;
+}
+
+export interface TakeoffSummaryRow {
+  item_code: string;
+  item_name: string;
+  specification: string;
+  unit: string;
+  quantity: number;
+  quantity_method: "CAD_BLOCK" | "MANUAL" | "MIXED";
+  review_status: "UNREVIEWED" | "REVIEWED" | "UNRESOLVED";
+  drawing_name: string;
+  drawing_revision: string;
+  notes: string;
+  is_provisional?: boolean;
+}
+
+export interface TakeoffEvidenceRow {
+  source_object_id: string;
+  drawing_id: string;
+  parent_source_id: string | null;
+  block_name: string;
+  layer_name: string;
+  entity_type: string;
+  x: number;
+  y: number;
+  mapped_item_code: string;
+  inclusion_status: "INCLUDED" | "EXCLUDED" | "MANUAL_ADDED";
+  review_status: "UNREVIEWED" | "REVIEWED" | "UNRESOLVED";
+  review_reason: string;
+  page_index?: number | null;
+  source_type?: string | null;
+  file_type?: string | null;
+  coordinate_space?: string | null;
+}
+
+export interface TakeoffResult {
+  drawing_id: string;
+  drawing_name: string;
+  drawing_revision: string;
+  summary: TakeoffSummaryRow[];
+  evidence: TakeoffEvidenceRow[];
+  warnings_count: number;
+  exported_at?: string;
+  is_provisional?: boolean;
+  unresolved_count?: number;
+}
+
+export interface ProjectMetadata {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  drawing_count: number;
+}
+
+export interface DrawingSummary {
+  id: string;
+  project_id: string;
+  filename: string;
+  file_hash: string;
+  revision: string;
+  units_name: string;
+  insunits: number;
+  created_at: string;
+  objects_count: number;
+  warnings_count: number;
+  source_type?: "DXF" | "IMAGE" | "PDF";
+  file_type?: string;
+  coordinate_space?: string;
+  dimensions?: { width: number; height: number };
+  page_count?: number;
+  pages?: PdfPageInfo[];
+}
+
+export type CandidateStatus = "PROPOSED" | "ACCEPTED" | "REJECTED";
+
+export type DetectionSource =
+  | "DXF_BLOCK"
+  | "PDF_VECTOR_RULE"
+  | "IMAGE_TEMPLATE"
+  | "VISUAL_TEMPLATE"
+  | string;
+
+export interface SymbolCandidate {
+  candidate_id: string;
+  drawing_id: string;
+  page_index: number;
+  coordinate_space: "WORLD" | "IMAGE_PIXEL" | "PDF_PAGE_POINT" | string;
+  x: number;
+  y: number;
+  bbox: [number, number, number, number];
+  suggested_item_code: string;
+  suggested_item_name: string;
+  confidence: number;
+  detection_source: DetectionSource;
+  status: CandidateStatus;
+  reviewed_item_code?: string | null;
+  reviewed_at?: string | null;
+  review_note?: string;
+  raw_evidence?: Record<string, unknown>;
+}
+
+export interface CandidateReviewUpdate {
+  candidate_id: string;
+  status: CandidateStatus;
+  reviewed_item_code?: string | null;
+  review_note?: string;
+}
+
+export interface CandidateBulkReviewRequest {
+  action?: "ACCEPT_ALL" | "REJECT_ALL" | "RESET_ALL";
+  filter_item_code?: string;
+  updates?: CandidateReviewUpdate[];
+}
+
+export interface CandidatesSummary {
+  total: number;
+  proposed: number;
+  accepted: number;
+  rejected: number;
+}
+
+export interface CandidatesResponse {
+  drawing_id: string;
+  summary: CandidatesSummary;
+  candidates: SymbolCandidate[];
+}
+
+export interface SymbolSearchRequest {
+  sample_bbox: [number, number, number, number];
+  page_index?: number;
+  suggested_item_code?: string;
+  suggested_item_name?: string;
+  threshold?: number;
+  search_all_pages?: boolean;
+  max_results?: number;
+}
+
+export interface SymbolSearchResponse {
+  drawing_id: string;
+  page_index: number;
+  total_found: number;
+  candidates: SymbolCandidate[];
+  message?: string;
+}
+
+export interface MappingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  version?: string;
+  is_builtin: boolean;
+  rules: ItemMappingRule[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MappingTemplateCreate {
+  name: string;
+  description?: string;
+  category?: string;
+  rules: ItemMappingRule[];
+}
+
+export interface ApplyTemplateRequest {
+  template_id: string;
+  merge_strategy: "MERGE" | "REPLACE";
+}
+
+export interface MappingTemplateListResponse {
+  templates: MappingTemplate[];
+  total: number;
+}
+
+export interface DemoDrawingItem {
+  drawing_id: string;
+  filename: string;
+  source_type: string;
+  objects_count: number;
+  candidates_count: number;
+  status: string;
+}
+
+export interface DemoSeedResponse {
+  status: string;
+  project_id: string;
+  project_name: string;
+  drawings: DemoDrawingItem[];
+  applied_template: string;
+  note?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #35: Scope & Revision, Project Takeoff, and Revision Diff
+// ---------------------------------------------------------------------------
+export type SheetRole = "INSTALLATION" | "REFERENCE" | "DETAIL" | "LEGEND" | "UNKNOWN";
+
+export interface DrawingScope {
+  drawing_id: string;
+  project_id: string;
+  sheet_key: string;
+  floor: string;
+  zone?: string | null;
+  discipline: string;
+  revision: string;
+  sheet_role: SheetRole;
+  active_for_takeoff: boolean;
+  is_latest: boolean;
+  description: string;
+  updated_at: string;
+}
+
+export interface DrawingScopeUpdate {
+  sheet_key?: string;
+  floor?: string;
+  zone?: string | null;
+  discipline?: string;
+  revision?: string;
+  sheet_role?: SheetRole;
+  active_for_takeoff?: boolean;
+  description?: string;
+}
+
+export interface ProjectTakeoffSummaryRow {
+  item_code: string;
+  item_name: string;
+  specification: string;
+  unit: string;
+  total_quantity: number;
+  active_drawings_count: number;
+  is_provisional: boolean;
+  review_status: string;
+  quantity_method: string;
+  notes: string;
+}
+
+export interface DrawingTakeoffBreakdownItem {
+  drawing_id: string;
+  filename: string;
+  sheet_key: string;
+  floor: string;
+  discipline: string;
+  revision: string;
+  sheet_role: SheetRole;
+  active_for_takeoff: boolean;
+  items: TakeoffSummaryRow[];
+  unresolved_count: number;
+  is_provisional: boolean;
+}
+
+export interface ProjectTakeoffResult {
+  project_id: string;
+  project_name: string;
+  total_active_drawings: number;
+  total_inactive_drawings: number;
+  total_equipment_ea?: number;
+  total_route_length_m?: number;
+  summary: ProjectTakeoffSummaryRow[];
+  drawings_breakdown: DrawingTakeoffBreakdownItem[];
+  drawings_scope: DrawingScope[];
+  scope_warnings: string[];
+  unresolved_count: number;
+  is_provisional: boolean;
+  exported_at: string;
+}
+
+export type CalibrationMethod = "TWO_POINT_MANUAL" | "KNOWN_SCALE_RATIO" | "CAD_HEADER_DEF";
+
+export interface CalibrationData {
+  drawing_id: string;
+  page_index: number;
+  method: CalibrationMethod;
+  point_a?: { x: number; y: number } | null;
+  point_b?: { x: number; y: number } | null;
+  pixel_distance?: number | null;
+  real_world_distance_m?: number | null;
+  scale_ratio_m_per_unit: number;
+  unit: string;
+  is_calibrated: boolean;
+  notes?: string;
+  calibrated_at?: string;
+}
+
+export interface CalibrationRequest {
+  page_index?: number;
+  method?: CalibrationMethod;
+  point_a?: { x: number; y: number } | null;
+  point_b?: { x: number; y: number } | null;
+  real_distance?: number | null;
+  scale_ratio_m_per_unit?: number | null;
+  unit?: string;
+  notes?: string;
+}
+
+export type RouteCategory = "WIRING" | "CONDUIT" | "CABLE_TRAY" | "BUS_DUCT" | "OTHER";
+export type RouteStatus = "DRAFT" | "PROVISIONAL_CONFIRMED";
+
+export interface ManualMeasuredRoute {
+  id: string;
+  drawing_id: string;
+  sheet_key?: string;
+  revision?: string;
+  page_index: number;
+  coordinate_space: "WORLD" | "IMAGE_PIXEL" | "PDF_PT";
+  points: { x: number; y: number }[];
+  category: RouteCategory;
+  item_code: string;
+  item_name: string;
+  spec: string;
+  raw_length: number;
+  length_2d_m?: number | null;
+  scale_ratio_m_per_unit?: number | null;
+  is_calibrated: boolean;
+  status: RouteStatus;
+  review_note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RouteCreateRequest {
+  page_index?: number;
+  coordinate_space?: "WORLD" | "IMAGE_PIXEL" | "PDF_PT";
+  points: { x: number; y: number }[];
+  category?: RouteCategory;
+  item_code?: string;
+  item_name?: string;
+  spec?: string;
+  review_note?: string;
+  status?: RouteStatus;
+}
+
+export interface RouteUpdateRequest {
+  points?: { x: number; y: number }[];
+  category?: RouteCategory;
+  item_code?: string;
+  item_name?: string;
+  spec?: string;
+  review_note?: string;
+  status?: RouteStatus;
+}
+
+export interface RevisionItemDelta {
+  item_code: string;
+  item_name: string;
+  specification: string;
+  unit: string;
+  base_quantity: number;
+  compare_quantity: number;
+  delta: number;
+  change_type: "INCREASED" | "DECREASED" | "UNCHANGED" | "ADDED" | "REMOVED";
+  notes: string;
+}
+
+export interface RevisionObjectDelta {
+  object_id: string;
+  item_code: string;
+  x: number;
+  y: number;
+  layer: string;
+  match_status: "MATCHED" | "PROPOSED_MATCH" | "ADDED" | "REMOVED";
+  confidence: number;
+  notes: string;
+}
+
+export interface RevisionComparisonResult {
+  project_id: string;
+  base_drawing: {
+    drawing_id: string;
+    drawing_name: string;
+    revision: string;
+    sheet_key: string;
+    floor: string;
+    discipline: string;
+    total_quantity: number;
+  };
+  compare_drawing: {
+    drawing_id: string;
+    drawing_name: string;
+    revision: string;
+    sheet_key: string;
+    floor: string;
+    discipline: string;
+    total_quantity: number;
+  };
+  items_delta: RevisionItemDelta[];
+  object_deltas: RevisionObjectDelta[];
+  total_base_qty: number;
+  total_compare_qty: number;
+  total_delta: number;
+  notes: string;
+}
+
+
+

@@ -1,0 +1,60 @@
+{
+  "description": "중첩 블록: 그룹 2개(각 조명 2개) + 단독 조명 1개. 중첩 집계는 A05 확정 전 미확인",
+  "expect_error": null,
+  "insunits": 4,
+  "encoding": null,
+  "top_level_inserts": {
+    "LT-GROUP": 2,
+    "LT-DL": 1
+  },
+  "nested_inserts": {
+    "LT-DL": 4
+  },
+  "warnings": [
+    "NESTED_BLOCK"
+  ],
+  "absent_warnings": [],
+  "mappings": [
+    {
+      "block_name": "LT-DL",
+      "item_code": "LIGHT"
+    }
+  ],
+  "expected_counts": {
+    "LIGHT": 1
+  },
+  "expected_unresolved": 4,
+  "expected_unmapped": 2,
+  "insert_checks": [
+    {
+      "block": "LT-DL",
+      "depth": 1,
+      "x": 0,
+      "y": 2600
+    },
+    {
+      "block": "LT-DL",
+      "depth": 1,
+      "x": 600,
+      "y": 0
+    },
+    {
+      "block": "LT-GROUP",
+      "x": 0,
+      "y": 2000,
+      "bbox": [
+        [
+          -150,
+          1850
+        ],
+        [
+          150,
+          2750
+        ]
+      ]
+    }
+  ],
+  "texts": [],
+  "lengths": [],
+  "allow_error_or_warning": false
+}
