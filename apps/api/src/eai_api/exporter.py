@@ -306,22 +306,22 @@ def export_xlsx(
             c.font = header_font
             c.alignment = align_center
 
-        for idx, r in enumerate(routes, start=1):
+        for idx, route in enumerate(routes, start=1):
             ws_routes.append([
                 idx,
-                sanitize_cell(r.id),
-                r.page_index,
-                sanitize_cell(r.category.value if hasattr(r.category, "value") else str(r.category)),
-                sanitize_cell(r.item_code),
-                sanitize_cell(r.item_name),
-                sanitize_cell(r.spec),
-                r.raw_length,
-                "보정완료" if r.is_calibrated else "미보정",
-                r.length_2d_m if r.length_2d_m is not None else 0.0,
-                sanitize_cell(r.status.value if hasattr(r.status, "value") else str(r.status)),
-                sanitize_cell(r.review_note),
-                sanitize_cell(r.coordinate_space),
-                sanitize_cell(r.created_at.isoformat()),
+                sanitize_cell(route.id),
+                route.page_index,
+                sanitize_cell(route.category.value if hasattr(route.category, "value") else str(route.category)),
+                sanitize_cell(route.item_code),
+                sanitize_cell(route.item_name),
+                sanitize_cell(route.spec),
+                route.raw_length,
+                "보정완료" if route.is_calibrated else "미보정",
+                route.length_2d_m if route.length_2d_m is not None else 0.0,
+                sanitize_cell(route.status.value if hasattr(route.status, "value") else str(route.status)),
+                sanitize_cell(route.review_note),
+                sanitize_cell(route.coordinate_space),
+                sanitize_cell(route.created_at.isoformat()),
             ])
             curr_row = ws_routes.max_row
             for col_idx in range(1, len(route_headers) + 1):
@@ -633,25 +633,25 @@ def export_project_xlsx(
             c.font = header_font
             c.alignment = align_center
 
-        for idx, r in enumerate(active_routes, start=1):
+        for idx, act_route in enumerate(active_routes, start=1):
             ws_routes.append([
                 idx,
-                sanitize_cell(r.drawing_id),
-                sanitize_cell(r.sheet_key or ""),
-                sanitize_cell(r.revision or ""),
-                r.page_index,
-                sanitize_cell(r.id),
-                sanitize_cell(r.category.value if hasattr(r.category, "value") else str(r.category)),
-                sanitize_cell(r.item_code),
-                sanitize_cell(r.item_name),
-                sanitize_cell(r.spec),
-                r.raw_length,
-                "보정완료" if r.is_calibrated else "미보정",
-                r.length_2d_m if r.length_2d_m is not None else 0.0,
-                sanitize_cell(r.status.value if hasattr(r.status, "value") else str(r.status)),
-                sanitize_cell(r.review_note),
-                sanitize_cell(r.coordinate_space),
-                sanitize_cell(r.created_at.isoformat()),
+                sanitize_cell(act_route.drawing_id),
+                sanitize_cell(act_route.sheet_key or ""),
+                sanitize_cell(act_route.revision or ""),
+                act_route.page_index,
+                sanitize_cell(act_route.id),
+                sanitize_cell(act_route.category.value if hasattr(act_route.category, "value") else str(act_route.category)),
+                sanitize_cell(act_route.item_code),
+                sanitize_cell(act_route.item_name),
+                sanitize_cell(act_route.spec),
+                act_route.raw_length,
+                "보정완료" if act_route.is_calibrated else "미보정",
+                act_route.length_2d_m if act_route.length_2d_m is not None else 0.0,
+                sanitize_cell(act_route.status.value if hasattr(act_route.status, "value") else str(act_route.status)),
+                sanitize_cell(act_route.review_note),
+                sanitize_cell(act_route.coordinate_space),
+                sanitize_cell(act_route.created_at.isoformat()),
             ])
             curr_row = ws_routes.max_row
             for col_idx in range(1, len(route_headers) + 1):
