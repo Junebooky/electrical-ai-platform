@@ -10,7 +10,7 @@ import {
   CandidateBulkReviewRequest,
   CandidatesResponse,
   MappingTemplate,
-  MappingTemplateItem,
+  MappingTemplateCreate,
   MappingTemplateListResponse,
   DemoSeedResponse,
 } from "@/types/cad";
@@ -249,12 +249,7 @@ export const api = {
     return handleResponse(res);
   },
 
-  createMappingTemplate: async (data: {
-    name: string;
-    description?: string;
-    category?: string;
-    mappings: MappingTemplateItem[];
-  }): Promise<MappingTemplate> => {
+  createMappingTemplate: async (data: MappingTemplateCreate): Promise<MappingTemplate> => {
     const res = await fetch(`${API_BASE}/api/mapping-templates`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -275,7 +270,7 @@ export const api = {
     drawingId: string,
     templateId: string,
     mergeStrategy: "MERGE" | "REPLACE" = "MERGE"
-  ): Promise<{ status: string; applied_count: number; total_mappings: number }> => {
+  ): Promise<ItemMappingRule[]> => {
     const res = await fetch(
       `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/apply-template`,
       {

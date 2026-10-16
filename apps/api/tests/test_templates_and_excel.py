@@ -88,7 +88,11 @@ def test_create_and_delete_custom_template(client: TestClient) -> None:
 
 
 def test_apply_template_merge_and_replace(client: TestClient) -> None:
-    """Verify applying templates to drawing with MERGE vs REPLACE strategies."""
+    """Verify applying templates to drawing with MERGE vs REPLACE strategies.
+
+    Specifically verifies P0-QTY-02: MERGE must preserve existing user-defined rules
+    (e.g., LT-DL -> CUSTOM_EM_LIGHT) and only append missing template rules.
+    """
     p_resp = client.post("/api/projects", json={"name": "Template Apply Test"})
     proj_id = p_resp.json()["id"]
 
@@ -99,33 +103,46 @@ def test_apply_template_merge_and_replace(client: TestClient) -> None:
     )
     dwg_id = up_resp.json()["drawing_id"]
 
-    # 1. Initial manual rule
+    # 1. Initial manual rules: one non-overlapping block, and one customized block (LT-DL)
     client.put(
         f"/api/projects/{proj_id}/drawings/{dwg_id}/mappings",
-        json=[{"block_name": "MY_CUSTOM_BLOCK", "item_code": "PANEL", "unit": "EA"}],
+        json=[
+            {"block_name": "MY_CUSTOM_BLOCK", "item_code": "PANEL", "item_name": "특수 분전반", "unit": "EA"},
+            {"block_name": "LT-DL", "item_code": "CUSTOM_EM_LIGHT", "item_name": "사용자 커스텀 비상등", "unit": "EA"},
+        ],
     )
 
-    # 2. Apply template with MERGE
+    # 2. Apply template with MERGE: must NOT overwrite user's LT-DL mapping!
     merge_resp = client.post(
         f"/api/projects/{proj_id}/drawings/{dwg_id}/apply-template",
         json={"template_id": "tpl_standard_elec", "merge_strategy": "MERGE"},
     )
     assert merge_resp.status_code == 200
     merged_rules = merge_resp.json()
-    rule_blocks = {r["block_name"] for r in merged_rules}
-    assert "MY_CUSTOM_BLOCK" in rule_blocks  # Preserved from initial manual rule
-    assert "LT-DL" in rule_blocks            # Added from template
+    rule_map = {r["block_name"]: r for r in merged_rules}
 
-    # 3. Apply template with REPLACE
+    # Preserved user mappings
+    assert "MY_CUSTOM_BLOCK" in rule_map
+    assert rule_map["MY_CUSTOM_BLOCK"]["item_code"] == "PANEL"
+    assert rule_map["LT-DL"]["item_code"] == "CUSTOM_EM_LIGHT"  # P0-QTY-02: NOT overwritten to "LIGHT"
+    assert rule_map["LT-DL"]["item_name"] == "사용자 커스텀 비상등"
+
+    # Newly appended template rules
+    assert "OT-2P" in rule_map
+    assert rule_map["OT-2P"]["item_code"] == "OUTLET"
+    assert "SW-1" in rule_map
+    assert rule_map["SW-1"]["item_code"] == "SWITCH"
+
+    # 3. Apply template with REPLACE: completely overwrites all rules
     replace_resp = client.post(
         f"/api/projects/{proj_id}/drawings/{dwg_id}/apply-template",
-        json={"template_id": "tpl_kec_standard", "merge_strategy": "REPLACE"},
+        json={"template_id": "tpl_standard_elec", "merge_strategy": "REPLACE"},
     )
     assert replace_resp.status_code == 200
     replaced_rules = replace_resp.json()
-    rep_blocks = {r["block_name"] for r in replaced_rules}
-    assert "MY_CUSTOM_BLOCK" not in rep_blocks  # Cleared by REPLACE
-    assert "KEC-LT" in rep_blocks               # From KEC template
+    rep_map = {r["block_name"]: r for r in replaced_rules}
+    assert "MY_CUSTOM_BLOCK" not in rep_map
+    assert rep_map["LT-DL"]["item_code"] == "LIGHT"  # Now reset to standard template rule
 
 
 def test_openpyxl_exact_cell_value_verification(client: TestClient) -> None:
@@ -234,3 +251,134 @@ def test_seed_demo_project_workflow(client: TestClient) -> None:
         takeoff = t_resp.json()
         assert "summary" in takeoff
         assert "evidence" in takeoff
+
+
+def test_apply_template_unit_validation_on_pdf_and_image(client: TestClient) -> None:
+    """Verify P0-MUNIT-03: On PDF and Image drawings, non-EA units are rejected both in save_mappings and apply_template.
+
+    Fail-closed: if rejected with 400, existing mappings must remain completely intact.
+    """
+    p_resp = client.post("/api/projects", json={"name": "Unit Validation Project"})
+    proj_id = p_resp.json()["id"]
+
+    # 1. Create a template with non-EA unit (e.g. M)
+    c_tpl = client.post(
+        "/api/mapping-templates",
+        json={
+            "name": "비EA 단위 템플릿",
+            "description": "케이블 길이 산출용 미터 단위 템플릿",
+            "rules": [{"block_name": "CABLE-M", "item_code": "CABLE", "item_name": "CV 전선", "unit": "M"}],
+        },
+    ).json()
+    tpl_non_ea_id = c_tpl["id"]
+
+    # 2. Upload PDF drawing
+    pdf_bytes = Path("fixtures/pdf/pdf_b_2page_electrical.pdf").read_bytes()
+    pdf_up = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("pdf_b_2page_electrical.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert pdf_up.status_code == 200
+    pdf_dwg_id = pdf_up.json()["drawing_id"]
+
+    # Set initial valid EA mapping on PDF drawing
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{pdf_dwg_id}/mappings",
+        json=[{"block_name": "T1", "item_code": "SWITCH", "unit": "EA"}],
+    )
+
+    # 2a. Reject direct PUT non-EA mapping on PDF
+    bad_put_pdf = client.put(
+        f"/api/projects/{proj_id}/drawings/{pdf_dwg_id}/mappings",
+        json=[{"block_name": "T1", "item_code": "CABLE", "unit": "M"}],
+    )
+    assert bad_put_pdf.status_code == 400
+    assert "PDF 도면" in bad_put_pdf.json()["detail"]
+    assert "EA" in bad_put_pdf.json()["detail"]
+
+    # 2b. Reject apply-template non-EA on PDF (P0-MUNIT-03)
+    bad_tpl_pdf = client.post(
+        f"/api/projects/{proj_id}/drawings/{pdf_dwg_id}/apply-template",
+        json={"template_id": tpl_non_ea_id, "merge_strategy": "MERGE"},
+    )
+    assert bad_tpl_pdf.status_code == 400
+    assert "PDF 도면" in bad_tpl_pdf.json()["detail"]
+
+    # Fail-closed check: verify original T1 mapping is unchanged
+    pdf_maps = client.get(f"/api/projects/{proj_id}/drawings/{pdf_dwg_id}/mappings").json()
+    assert len(pdf_maps) == 1
+    assert pdf_maps[0]["block_name"] == "T1"
+    assert pdf_maps[0]["unit"] == "EA"
+
+    # 3. Upload IMAGE drawing
+    img_bytes = Path("fixtures/images/floorplan_sample.png").read_bytes()
+    img_up = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", img_bytes, "image/png")},
+    )
+    assert img_up.status_code == 200
+    img_dwg_id = img_up.json()["drawing_id"]
+
+    # Set initial valid EA mapping on Image drawing
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{img_dwg_id}/mappings",
+        json=[{"block_name": "IMG_T1", "item_code": "LIGHT", "unit": "EA"}],
+    )
+
+    # 3a. Reject direct PUT non-EA mapping on IMAGE
+    bad_put_img = client.put(
+        f"/api/projects/{proj_id}/drawings/{img_dwg_id}/mappings",
+        json=[{"block_name": "IMG_T1", "item_code": "CONDUIT", "unit": "M"}],
+    )
+    assert bad_put_img.status_code == 400
+    assert "이미지 도면" in bad_put_img.json()["detail"]
+    assert "EA" in bad_put_img.json()["detail"]
+
+    # 3b. Reject apply-template non-EA on IMAGE (P0-MUNIT-03)
+    bad_tpl_img = client.post(
+        f"/api/projects/{proj_id}/drawings/{img_dwg_id}/apply-template",
+        json={"template_id": tpl_non_ea_id, "merge_strategy": "MERGE"},
+    )
+    assert bad_tpl_img.status_code == 400
+    assert "이미지 도면" in bad_tpl_img.json()["detail"]
+
+    # Fail-closed check: verify original IMG_T1 mapping is unchanged
+    img_maps = client.get(f"/api/projects/{proj_id}/drawings/{img_dwg_id}/mappings").json()
+    assert len(img_maps) == 1
+    assert img_maps[0]["block_name"] == "IMG_T1"
+    assert img_maps[0]["unit"] == "EA"
+
+    # 4. Valid EA template succeeds on both PDF and IMAGE
+    ok_pdf = client.post(
+        f"/api/projects/{proj_id}/drawings/{pdf_dwg_id}/apply-template",
+        json={"template_id": "tpl_standard_elec", "merge_strategy": "MERGE"},
+    )
+    assert ok_pdf.status_code == 200
+
+    ok_img = client.post(
+        f"/api/projects/{proj_id}/drawings/{img_dwg_id}/apply-template",
+        json={"template_id": "tpl_standard_elec", "merge_strategy": "MERGE"},
+    )
+    assert ok_img.status_code == 200
+
+
+def test_seed_demo_project_idempotency_and_schema(client: TestClient) -> None:
+    """Verify demo project seed response schema and safe idempotency."""
+    resp1 = client.post("/api/demo/seed")
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert "project_id" in data1
+    assert "project_name" in data1
+    assert "drawings" in data1
+    for d in data1["drawings"]:
+        assert "drawing_id" in d
+        assert "source_type" in d
+        assert "filename" in d
+        assert d["status"] == "ready"
+
+    # Second call should reuse the project cleanly without failing
+    resp2 = client.post("/api/demo/seed")
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["project_id"] == data1["project_id"]
+    assert len(data2["drawings"]) == 3

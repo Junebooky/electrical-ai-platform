@@ -256,4 +256,32 @@ class ApplyTemplateRequest(BaseModel):
 
 class MappingTemplateListResponse(BaseModel):
     templates: list[MappingTemplate]
+    total: int = 0
+
+
+class DemoDrawingItem(BaseModel):
+    drawing_id: str
+    filename: str
+    source_type: str
+    objects_count: int = 0
+    candidates_count: int = 0
+    status: str = "ready"
+    id: str | None = None
+    format: str | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.id:
+            self.id = self.drawing_id
+        if not self.format:
+            self.format = self.source_type
+
+
+class DemoSeedResponse(BaseModel):
+    status: str
+    project_id: str
+    project_name: str
+    drawings: list[DemoDrawingItem]
+    applied_template: str = ""
+    note: str = ""
+
 

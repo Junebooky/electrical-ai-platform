@@ -321,8 +321,8 @@ class Storage:
             ),
             MappingTemplate(
                 id="tpl_kec_standard",
-                name="KEC 규격 배선기구 템플릿",
-                description="한국전기설비규정(KEC) 표준 심벌 및 접지/방수 기구 매핑",
+                name="KEC 참고 배선기구 템플릿 (참고 예시)",
+                description="한국전기설비규정(KEC) 설계 참고용 예시 심벌 (공인 인증 기호 아님)",
                 created_at=now,
                 updated_at=now,
                 is_builtin=True,
@@ -385,6 +385,37 @@ class Storage:
             return True
         return False
 
+    def compute_template_mappings(
+        self,
+        project_id: str,
+        drawing_id: str,
+        template_id: str,
+        merge_strategy: str = "MERGE",
+    ) -> list[ItemMappingRule]:
+        """Compute candidate mappings when applying a template without saving to disk yet.
+
+        MERGE: Preserves existing mappings completely (user overrides like LT-DL -> EM_LIGHT are
+               NOT overwritten). Only missing block mappings from the template are appended.
+        REPLACE: Completely replaces the drawing's mapping rules with the template's rules.
+        """
+        template = self.get_mapping_template(template_id)
+        if not template:
+            raise ValueError(f"템플릿을 찾을 수 없습니다: {template_id}")
+
+        existing = self.get_mappings(project_id, drawing_id)
+        if merge_strategy == "REPLACE":
+            return list(template.rules)
+
+        # MERGE: Keep existing rule intact, only append rules for unseen block names
+        merged = list(existing)
+        seen_blocks = {r.block_name for r in existing}
+        for tpl_r in template.rules:
+            if tpl_r.block_name not in seen_blocks:
+                merged.append(tpl_r)
+                seen_blocks.add(tpl_r.block_name)
+
+        return merged
+
     def apply_mapping_template(
         self,
         project_id: str,
@@ -392,33 +423,12 @@ class Storage:
         template_id: str,
         merge_strategy: str = "MERGE",
     ) -> list[ItemMappingRule]:
-        template = self.get_mapping_template(template_id)
-        if not template:
-            raise ValueError(f"템플릿을 찾을 수 없습니다: {template_id}")
-
-        existing = self.get_mappings(project_id, drawing_id)
-        if merge_strategy == "REPLACE":
-            new_rules = list(template.rules)
-        else:
-            tpl_rule_map = {r.block_name: r for r in template.rules}
-            merged: list[ItemMappingRule] = []
-            seen_blocks: set[str] = set()
-
-            for r in existing:
-                if r.block_name in tpl_rule_map:
-                    merged.append(tpl_rule_map[r.block_name])
-                    seen_blocks.add(r.block_name)
-                else:
-                    merged.append(r)
-                    seen_blocks.add(r.block_name)
-
-            for r in template.rules:
-                if r.block_name not in seen_blocks:
-                    merged.append(r)
-                    seen_blocks.add(r.block_name)
-
-            new_rules = merged
-
+        new_rules = self.compute_template_mappings(
+            project_id=project_id,
+            drawing_id=drawing_id,
+            template_id=template_id,
+            merge_strategy=merge_strategy,
+        )
         self.save_mappings(project_id, drawing_id, new_rules)
         return new_rules
 

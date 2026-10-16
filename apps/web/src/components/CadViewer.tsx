@@ -151,6 +151,15 @@ export function CadViewer({
         const marker = manualMarkers.find((m) => m.id === selectedObjectId);
         if (marker) {
           targetCoord = [marker.x, marker.y];
+        } else {
+          const cand = candidates.find(
+            (c) =>
+              c.candidate_id === selectedObjectId ||
+              c.raw_evidence?.source_object_id === selectedObjectId
+          );
+          if (cand) {
+            targetCoord = [cand.x, cand.y];
+          }
         }
       }
     } else if (selectedCandidateId) {
@@ -490,6 +499,7 @@ export function CadViewer({
                   className="pointer-events-auto cursor-pointer interactive-marker"
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
+                    lastCanvasClickTimeRef.current = Date.now();
                     e.stopPropagation();
                     onSelectObject(obj.id);
                   }}
@@ -560,6 +570,7 @@ export function CadViewer({
                 className="pointer-events-auto cursor-pointer interactive-marker"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
+                  lastCanvasClickTimeRef.current = Date.now();
                   e.stopPropagation();
                   onSelectObject(m.id);
                 }}
@@ -616,7 +627,10 @@ export function CadViewer({
                   return true;
                 })
                 .map((c) => {
-                  const isSelected = c.candidate_id === selectedCandidateId;
+                  const isSelected =
+                    c.candidate_id === selectedCandidateId ||
+                    c.candidate_id === selectedObjectId ||
+                    Boolean(c.raw_evidence?.source_object_id && c.raw_evidence.source_object_id === selectedObjectId);
                   const isAccepted = c.status === "ACCEPTED";
                   const isRejected = c.status === "REJECTED";
                   const candY = isTopLeftOrigin ? c.y : -c.y;
@@ -644,6 +658,7 @@ export function CadViewer({
                       className="pointer-events-auto cursor-pointer interactive-candidate"
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
+                        lastCanvasClickTimeRef.current = Date.now();
                         e.stopPropagation();
                         onSelectCandidate?.(c);
                       }}

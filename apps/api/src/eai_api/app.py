@@ -25,6 +25,8 @@ from .models import (
     CandidatesResponse,
     CandidatesSummary,
     CandidateStatus,
+    DemoDrawingItem,
+    DemoSeedResponse,
     DrawingSummary,
     EvidenceReviewItem,
     InclusionStatus,
@@ -419,6 +421,28 @@ def get_mappings(project_id: str, drawing_id: str) -> list[ItemMappingRule]:
     return storage.get_mappings(project_id, drawing_id)
 
 
+def validate_drawing_mapping_units(drawing: Any, rules: list[ItemMappingRule]) -> None:
+    """IMG-03, PR B & P0-MUNIT-03: On IMAGE/PDF drawings, all mapping units must be strictly 'EA'."""
+    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
+    is_pdf = getattr(drawing, "source_type", None) == "PDF" or getattr(drawing, "coordinate_space", None) == "PDF_PAGE_POINT"
+    if is_image:
+        for r in rules:
+            actual_u = (r.unit or "EA").strip()
+            if actual_u != "EA":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미지 도면(IMAGE_PIXEL)의 매핑 단위는 P0 원칙(IMG-03/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
+                )
+    elif is_pdf:
+        for r in rules:
+            actual_u = (r.unit or "EA").strip()
+            if actual_u != "EA":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF 도면(PDF_PAGE_POINT)의 매핑 단위는 P0 원칙(PR B/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
+                )
+
+
 @app.put("/api/projects/{project_id}/drawings/{drawing_id}/mappings")
 def save_mappings(
     project_id: str,
@@ -429,25 +453,7 @@ def save_mappings(
     if not drawing:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
-    # IMG-03 & PR B: On IMAGE/PDF drawings, all mapping units must be strictly 'EA'
-    is_image = getattr(drawing, "source_type", None) == "IMAGE" or getattr(drawing, "coordinate_space", None) == "IMAGE_PIXEL"
-    is_pdf = getattr(drawing, "source_type", None) == "PDF" or getattr(drawing, "coordinate_space", None) == "PDF_PAGE_POINT"
-    if is_image:
-        for r in mappings:
-            actual_u = (r.unit or "EA").strip()
-            if actual_u != "EA":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"이미지 도면(IMAGE_PIXEL)의 매핑 단위는 P0 원칙(IMG-03/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
-                )
-    elif is_pdf:
-        for r in mappings:
-            actual_u = (r.unit or "EA").strip()
-            if actual_u != "EA":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"PDF 도면(PDF_PAGE_POINT)의 매핑 단위는 P0 원칙(PR B/M-UNIT-01)상 'EA'만 허용됩니다 (요청 단위: '{r.unit}').",
-                )
+    validate_drawing_mapping_units(drawing, mappings)
 
     try:
         storage.save_mappings(project_id, drawing_id, mappings)
@@ -461,7 +467,7 @@ def save_mappings(
 def list_mapping_templates() -> MappingTemplateListResponse:
     """List built-in and custom reusable legend/item mapping templates."""
     templates = storage.list_mapping_templates()
-    return MappingTemplateListResponse(templates=templates)
+    return MappingTemplateListResponse(templates=templates, total=len(templates))
 
 
 @app.post("/api/mapping-templates", response_model=MappingTemplate)
@@ -503,7 +509,7 @@ def apply_mapping_template(
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
     try:
-        return storage.apply_mapping_template(
+        new_rules = storage.compute_template_mappings(
             project_id=project_id,
             drawing_id=drawing_id,
             template_id=req.template_id,
@@ -512,107 +518,157 @@ def apply_mapping_template(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    # P0-MUNIT-03: Shared unit validation ensures PDF/IMAGE drawings reject any non-EA template rules before saving
+    validate_drawing_mapping_units(drawing, new_rules)
+
+    storage.save_mappings(project_id, drawing_id, new_rules)
+    return new_rules
+
 
 # ------------------------------------------------------------- Guided Live Demo Seed (Issue #23)
-@app.post("/api/demo/seed")
-def seed_demo_project() -> dict[str, Any]:
+def get_fixture_path(subpath: str) -> Path:
+    p = Path(subpath)
+    if p.exists():
+        return p
+    curr = Path(__file__).resolve().parent
+    for _ in range(6):
+        cand = curr / subpath
+        if cand.exists():
+            return cand
+        curr = curr.parent
+    raise FileNotFoundError(f"필수 데모 도면 fixture를 찾을 수 없습니다: {subpath}")
+
+
+@app.post("/api/demo/seed", response_model=DemoSeedResponse)
+def seed_demo_project() -> DemoSeedResponse:
     """Seed a comprehensive live demo project with DXF, PDF, and Image drawings.
 
     Includes applied standard templates and candidate detection for instant end-to-end walkthrough.
     """
-    proj_payload = ProjectCreate(
-        name="EAI 실전 전기 적산 데모 (Issue #23)",
-        description="DXF, PDF, Image 3개 포맷 기호 탐지·매핑·일괄검수·물량산출 통합 시연 프로젝트",
-    )
-    proj = storage.create_project(proj_payload)
-    seeded_drawings: list[dict[str, Any]] = []
+    demo_name = "EAI 실전 전기 적산 데모 (Issue #23)"
+    existing_projects = storage.list_projects()
+    proj = next((p for p in existing_projects if p.name == demo_name), None)
+    if not proj:
+        proj_payload = ProjectCreate(
+            name=demo_name,
+            description="DXF, PDF, Image 3개 포맷 기호 탐지·매핑·일괄검수·물량산출 통합 시연 프로젝트",
+        )
+        proj = storage.create_project(proj_payload)
+
+    seeded_drawings: list[DemoDrawingItem] = []
 
     # 1. DXF Fixture
-    dxf_fixture = Path("fixtures/dxf/basic_devices.dxf")
-    if dxf_fixture.exists():
-        raw_bytes = dxf_fixture.read_bytes()
-        norm_dwg = parse_dxf(raw_bytes, filename=dxf_fixture.name)
-        storage.save_drawing(
-            proj.id,
-            norm_dwg,
-            raw_bytes=raw_bytes,
+    dxf_fixture = get_fixture_path("fixtures/dxf/basic_devices.dxf")
+    raw_bytes = dxf_fixture.read_bytes()
+    norm_dwg = parse_dxf(raw_bytes, filename=dxf_fixture.name)
+    storage.save_drawing(
+        proj.id,
+        norm_dwg,
+        raw_bytes=raw_bytes,
+        source_type="DXF",
+        file_type="DXF",
+        coordinate_space="WORLD",
+    )
+    storage.apply_mapping_template(proj.id, norm_dwg.drawing_id, "tpl_standard_elec")
+    cands = detect_candidates(
+        norm_dwg,
+        raw_bytes,
+        norm_dwg.drawing_id,
+        source_type="DXF",
+        mapping_rules=storage.get_mappings(proj.id, norm_dwg.drawing_id),
+    )
+    storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
+    seeded_drawings.append(
+        DemoDrawingItem(
+            drawing_id=norm_dwg.drawing_id,
+            filename=dxf_fixture.name,
             source_type="DXF",
-            file_type="DXF",
-            coordinate_space="WORLD",
+            objects_count=len(norm_dwg.objects),
+            candidates_count=len(cands),
+            status="ready",
         )
-        storage.apply_mapping_template(proj.id, norm_dwg.drawing_id, "tpl_standard_elec")
-        cands = detect_candidates(
-            norm_dwg,
-            raw_bytes,
-            norm_dwg.drawing_id,
-            source_type="DXF",
-            mapping_rules=storage.get_mappings(proj.id, norm_dwg.drawing_id),
-        )
-        storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
-        seeded_drawings.append({"id": norm_dwg.drawing_id, "format": "DXF", "filename": "basic_devices.dxf"})
+    )
 
     # 2. Vector PDF Fixture
-    pdf_fixture = Path("fixtures/pdf/pdf_c_vector_features.pdf")
-    if pdf_fixture.exists():
-        raw_bytes = pdf_fixture.read_bytes()
-        doc_info = parse_pdf_document(raw_bytes)
-        drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
-        norm_dwg = build_pdf_drawing(doc_info, drawing_id, filename=pdf_fixture.name)
-        first_p = doc_info.pages[0] if doc_info.pages else None
-        pw = int(first_p.display_width_pt) if first_p else 595
-        ph = int(first_p.display_height_pt) if first_p else 842
-        storage.save_drawing(
-            proj.id,
-            norm_dwg,
-            raw_bytes=raw_bytes,
+    pdf_fixture = get_fixture_path("fixtures/pdf/pdf_c_vector_features.pdf")
+    raw_bytes = pdf_fixture.read_bytes()
+    doc_info = parse_pdf_document(raw_bytes)
+    drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
+    norm_dwg = build_pdf_drawing(doc_info, drawing_id, filename=pdf_fixture.name)
+    first_p = doc_info.pages[0] if doc_info.pages else None
+    pw = int(first_p.display_width_pt) if first_p else 595
+    ph = int(first_p.display_height_pt) if first_p else 842
+    storage.save_drawing(
+        proj.id,
+        norm_dwg,
+        raw_bytes=raw_bytes,
+        source_type="PDF",
+        file_type="PDF",
+        coordinate_space="PDF_PAGE_POINT",
+        dimensions={"width": pw, "height": ph},
+        page_count=doc_info.page_count,
+        pages=[p.to_dict() for p in doc_info.pages],
+    )
+    cands = detect_candidates(
+        norm_dwg,
+        raw_bytes,
+        norm_dwg.drawing_id,
+        source_type="PDF",
+        page_count=doc_info.page_count,
+    )
+    storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
+    seeded_drawings.append(
+        DemoDrawingItem(
+            drawing_id=norm_dwg.drawing_id,
+            filename=pdf_fixture.name,
             source_type="PDF",
-            file_type="PDF",
-            coordinate_space="PDF_PAGE_POINT",
-            dimensions={"width": pw, "height": ph},
-            page_count=doc_info.page_count,
-            pages=[p.to_dict() for p in doc_info.pages],
+            objects_count=len(norm_dwg.objects),
+            candidates_count=len(cands),
+            status="ready",
         )
-        cands = detect_candidates(
-            norm_dwg,
-            raw_bytes,
-            norm_dwg.drawing_id,
-            source_type="PDF",
-            page_count=doc_info.page_count,
-        )
-        storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
-        seeded_drawings.append({"id": norm_dwg.drawing_id, "format": "PDF", "filename": "pdf_c_vector_features.pdf"})
+    )
 
     # 3. Raster Image Fixture
-    img_fixture = Path("fixtures/images/floorplan_sample.png")
-    if img_fixture.exists():
-        raw_bytes = img_fixture.read_bytes()
-        img_info = inspect_image(raw_bytes, filename=img_fixture.name)
-        drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
-        norm_dwg = build_image_drawing(img_info, drawing_id)
-        storage.save_drawing(
-            proj.id,
-            norm_dwg,
-            raw_bytes=raw_bytes,
+    img_fixture = get_fixture_path("fixtures/images/floorplan_sample.png")
+    raw_bytes = img_fixture.read_bytes()
+    img_info = inspect_image(raw_bytes, filename=img_fixture.name)
+    drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
+    norm_dwg = build_image_drawing(img_info, drawing_id)
+    storage.save_drawing(
+        proj.id,
+        norm_dwg,
+        raw_bytes=raw_bytes,
+        source_type="IMAGE",
+        file_type="PNG",
+        coordinate_space="IMAGE_PIXEL",
+        dimensions={"width": img_info.width, "height": img_info.height},
+    )
+    cands = detect_candidates(
+        norm_dwg,
+        raw_bytes,
+        norm_dwg.drawing_id,
+        source_type="IMAGE",
+    )
+    storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
+    seeded_drawings.append(
+        DemoDrawingItem(
+            drawing_id=norm_dwg.drawing_id,
+            filename=img_fixture.name,
             source_type="IMAGE",
-            file_type="PNG",
-            coordinate_space="IMAGE_PIXEL",
-            dimensions={"width": img_info.width, "height": img_info.height},
+            objects_count=len(norm_dwg.objects),
+            candidates_count=len(cands),
+            status="ready",
         )
-        cands = detect_candidates(
-            norm_dwg,
-            raw_bytes,
-            norm_dwg.drawing_id,
-            source_type="IMAGE",
-        )
-        storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
-        seeded_drawings.append({"id": norm_dwg.drawing_id, "format": "IMAGE", "filename": "floorplan_sample.png"})
+    )
 
-    return {
-        "status": "seeded",
-        "project_id": proj.id,
-        "project_name": proj.name,
-        "drawings": seeded_drawings,
-    }
+    return DemoSeedResponse(
+        status="seeded",
+        project_id=proj.id,
+        project_name=proj.name,
+        drawings=seeded_drawings,
+        applied_template="tpl_standard_elec",
+        note="DXF·PDF·이미지 3개 포맷 데모 도면 및 표준 템플릿·기호 탐지 사전 적용 완료",
+    )
 
 
 

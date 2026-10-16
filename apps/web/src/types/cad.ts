@@ -323,25 +323,23 @@ export interface CandidatesResponse {
   candidates: SymbolCandidate[];
 }
 
-export interface MappingTemplateItem {
-  block_name: string;
-  item_code: string;
-  item_name: string;
-  specification?: string;
-  unit?: string;
-  notes?: string;
-}
-
 export interface MappingTemplate {
   id: string;
   name: string;
   description?: string;
   category?: string;
   version?: string;
-  is_built_in?: boolean;
-  mappings: MappingTemplateItem[];
+  is_builtin: boolean;
+  rules: ItemMappingRule[];
   created_at: string;
   updated_at: string;
+}
+
+export interface MappingTemplateCreate {
+  name: string;
+  description?: string;
+  category?: string;
+  rules: ItemMappingRule[];
 }
 
 export interface ApplyTemplateRequest {
@@ -354,18 +352,22 @@ export interface MappingTemplateListResponse {
   total: number;
 }
 
+export interface DemoDrawingItem {
+  drawing_id: string;
+  filename: string;
+  source_type: string;
+  objects_count: number;
+  candidates_count: number;
+  status: string;
+}
+
 export interface DemoSeedResponse {
   status: string;
   project_id: string;
   project_name: string;
-  drawings: {
-    drawing_id: string;
-    filename: string;
-    source_type: string;
-    status: string;
-    candidates_count?: number;
-  }[];
-  applied_template?: string;
+  drawings: DemoDrawingItem[];
+  applied_template: string;
+  note?: string;
 }
 
 

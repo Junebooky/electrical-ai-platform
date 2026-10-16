@@ -79,23 +79,12 @@ export function MappingPanel({
           selectedTemplateId,
           mergeStrategy
         );
-        const tpl = templates.find((t) => t.id === selectedTemplateId);
-        if (tpl) {
-          setLocalMap((prev) => {
-            const nextMap = mergeStrategy === "REPLACE" ? {} : { ...prev };
-            tpl.mappings.forEach((item) => {
-              nextMap[item.block_name] = {
-                block_name: item.block_name,
-                item_code: item.item_code,
-                item_name: item.item_name,
-                specification: item.specification || "",
-                unit: item.unit || "EA",
-              };
-            });
-            return nextMap;
-          });
-        }
-        setTemplateFeedback(`템플릿 적용 완료: ${res.applied_count}개 규칙 반영됨 (${res.total_mappings}개 총 매핑)`);
+        const nextMap: Record<string, ItemMappingRule> = {};
+        res.forEach((item) => {
+          nextMap[item.block_name] = { ...item };
+        });
+        setLocalMap(nextMap);
+        setTemplateFeedback(`템플릿 적용 완료: ${res.length}개 규칙 반영됨`);
         if (onReloadMappings) {
           await onReloadMappings();
         }
@@ -104,14 +93,11 @@ export function MappingPanel({
         const tpl = templates.find((t) => t.id === selectedTemplateId);
         if (tpl) {
           const nextMap = mergeStrategy === "REPLACE" ? {} : { ...localMap };
-          tpl.mappings.forEach((item) => {
-            nextMap[item.block_name] = {
-              block_name: item.block_name,
-              item_code: item.item_code,
-              item_name: item.item_name,
-              specification: item.specification || "",
-              unit: item.unit || "EA",
-            };
+          const existingBlocks = new Set(Object.keys(localMap));
+          (tpl.rules || []).forEach((item) => {
+            if (mergeStrategy === "REPLACE" || !existingBlocks.has(item.block_name)) {
+              nextMap[item.block_name] = { ...item };
+            }
           });
           setLocalMap(nextMap);
           setTemplateFeedback(`템플릿 "${tpl.name}"이 로컬에 적용되었습니다.`);
@@ -119,7 +105,8 @@ export function MappingPanel({
       }
     } catch (err: unknown) {
       console.error("Failed to apply template", err);
-      setTemplateFeedback("템플릿 적용 실패");
+      const msg = err instanceof Error ? err.message : "템플릿 적용 실패";
+      setTemplateFeedback(`템플릿 적용 실패: ${msg}`);
     } finally {
       setIsApplyingTemplate(false);
       setTimeout(() => setTemplateFeedback(null), 4000);
@@ -138,11 +125,11 @@ export function MappingPanel({
       const created = await api.createMappingTemplate({
         name: newTemplateName.trim(),
         description: newTemplateDesc.trim() || undefined,
-        mappings: activeRules.map((r) => ({
+        rules: activeRules.map((r) => ({
           block_name: r.block_name,
           item_code: r.item_code,
           item_name: r.item_name || r.item_code,
-          specification: r.specification || undefined,
+          specification: r.specification || "",
           unit: r.unit || "EA",
         })),
       });
@@ -276,7 +263,7 @@ export function MappingPanel({
               <BookOpen size={14} className="text-indigo-400" />
               범례·품목 매핑 템플릿
             </span>
-            {activeTemplate?.is_built_in ? (
+            {activeTemplate?.is_builtin ? (
               <span className="text-[10px] bg-indigo-950 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-800">
                 표준 제공 템플릿
               </span>
@@ -296,8 +283,8 @@ export function MappingPanel({
               >
                 {templates.map((tpl) => (
                   <option key={tpl.id} value={tpl.id}>
-                    {tpl.is_built_in ? "⭐ " : "📁 "}
-                    {tpl.name} ({tpl.mappings.length}개 규칙)
+                    {tpl.is_builtin ? "⭐ " : "📁 "}
+                    {tpl.name} ({(tpl.rules || []).length}개 규칙)
                   </option>
                 ))}
               </select>
@@ -339,7 +326,7 @@ export function MappingPanel({
                 <RefreshCw size={12} className={isApplyingTemplate ? "animate-spin" : ""} />
                 {isApplyingTemplate ? "적용 중..." : "템플릿 적용"}
               </button>
-              {activeTemplate && !activeTemplate.is_built_in && (
+              {activeTemplate && !activeTemplate.is_builtin && (
                 <button
                   onClick={() => handleDeleteTemplate(activeTemplate.id)}
                   className="p-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded transition"
