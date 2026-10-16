@@ -409,8 +409,19 @@ export function MappingPanel({
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {blocks.length === 0 ? (
-          <div className="text-center py-12 text-slate-500 text-sm">
-            도면에 정의된 블록이 없습니다.
+          <div className="text-center py-10 px-4 bg-slate-900/60 rounded-xl border border-slate-800 my-4 flex flex-col items-center">
+            <div className="w-12 h-12 mb-3 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center text-amber-400">
+              <Tag size={20} />
+            </div>
+            <h4 className="text-slate-200 font-semibold text-sm mb-1.5">
+              자동 집계 가능한 CAD 블록 없음
+            </h4>
+            <p className="text-slate-400 text-xs leading-relaxed max-w-[340px] mb-4">
+              선·원·문자(LINE, CIRCLE, TEXT) 등 기본 엔티티로 구성되었거나 CAD INSERT 블록이 없는 도면입니다. 기구 수량은 상단 <b>[누락 기구 수동 추가]</b> 또는 <b>[기호 검색]</b> 탭의 드래그 검색을 통해 마커를 추가해 주세요.
+            </p>
+            <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded text-left leading-relaxed">
+              💡 <b>도메인 안전 수칙:</b> 도면 내에 &apos;LIGHT&apos;, &apos;OUTLET&apos; 등의 텍스트가 적혀 있더라도 실제 CAD 기구 블록이 아니므로 임의로 AI 자동 확정 수량으로 집계하지 않습니다 (FR-016).
+            </div>
           </div>
         ) : (
           blocks.map((b) => {

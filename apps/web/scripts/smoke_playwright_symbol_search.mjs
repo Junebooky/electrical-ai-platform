@@ -213,6 +213,10 @@ async function runPlaywrightSmoke() {
     // Step 1: Initial Landing & Demo Project Seed
     // -------------------------------------------------------------------------
     console.log("\n--- Scenario 1: Initial Landing & Seed Demo Project ---");
+    // Ensure clean deterministic baseline
+    try {
+      await fetch(`${API_URL}/api/demo/seed?reset=true`, { method: "POST" });
+    } catch {}
     await page.goto(BASE_URL, { waitUntil: "networkidle" });
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "01_landing_page.png") });
 
@@ -335,8 +339,11 @@ async function runPlaywrightSmoke() {
     // Click bulk accept to approve proposed candidates
     const bulkAcceptBtn = await page.waitForSelector('[data-testid="btn-bulk-accept"]', { timeout: 6000 });
     assert(bulkAcceptBtn, "Bulk accept button not found in review panel");
-    await bulkAcceptBtn.click();
-    await page.waitForTimeout(1500);
+    const isBulkDisabled = await page.$eval('[data-testid="btn-bulk-accept"]', (btn) => btn.disabled);
+    if (!isBulkDisabled) {
+      await bulkAcceptBtn.click();
+      await page.waitForTimeout(1500);
+    }
 
     // Verify candidates are now accepted
     const acceptedCountText = await page.$eval(

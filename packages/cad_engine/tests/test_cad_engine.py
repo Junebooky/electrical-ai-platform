@@ -252,3 +252,23 @@ def test_nested_hierarchy_withholding_qa_09_d() -> None:
     assert len(parent_unresolved) == 2
     assert len(child_unresolved) == 4
 
+
+def test_r12_malformed_lwpolyline_actionable_diagnosis() -> None:
+    """Issue #15: R12 declaration with LWPOLYLINE missing AcDbPolyline subclass gives actionable guidance."""
+    fixture_path = Path(__file__).parent / "fixtures" / "r12_malformed_lwpolyline.dxf"
+    assert fixture_path.exists()
+    raw_bytes = fixture_path.read_bytes()
+
+    with pytest.raises(DxfLoadError) as exc_info:
+        parse_dxf(raw_bytes, filename="r12_malformed_lwpolyline.dxf")
+
+    err = exc_info.value
+    assert err.code.value == "DXF_STRUCTURE_ERROR"
+    assert err.detail is not None
+    # Must clearly connect R12, LWPOLYLINE, AcDbPolyline, and recommended action (Save As AutoCAD 2000 DXF)
+    assert "AutoCAD R12(AC1009)" in err.detail
+    assert "LWPOLYLINE" in err.detail
+    assert "AcDbPolyline" in err.detail
+    assert "AutoCAD 2000 DXF(AC1015)" in err.detail
+    assert "다시 저장(Save As)" in err.detail
+

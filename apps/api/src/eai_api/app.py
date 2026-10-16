@@ -77,12 +77,13 @@ storage = Storage()
 
 @app.exception_handler(DxfLoadError)
 async def dxf_load_error_handler(_: Any, exc: DxfLoadError) -> JSONResponse:
+    user_message = f"{exc.message} {exc.detail}" if exc.detail else exc.message
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={
             "error": "DXF_LOAD_ERROR",
             "code": exc.code,
-            "message": exc.message,
+            "message": user_message,
             "detail": exc.detail,
         },
     )

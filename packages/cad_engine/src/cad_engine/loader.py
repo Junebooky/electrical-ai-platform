@@ -118,7 +118,23 @@ def load_dxf_bytes(data: bytes, *, max_bytes: int = DEFAULT_MAX_FILE_BYTES) -> L
             )
         doc, auditor = recover.read(io.BytesIO(data))
     except ezdxf.DXFStructureError as exc:
-        raise DxfLoadError(LoadErrorCode.DXF_STRUCTURE_ERROR, str(exc)) from exc
+        exc_str = str(exc)
+        if "missing 'AcDbPolyline' subclass" in exc_str:
+            is_r12 = b"AC1009" in data[:4096]
+            if is_r12:
+                detail = (
+                    "이 DXF는 AutoCAD R12(AC1009)로 선언되어 있으나, 상위 버전 전용 객체인 경량 폴리라인(LWPOLYLINE)이 "
+                    "하위 클래스 식별자(AcDbPolyline) 없이 비표준 구조로 포함되어 있습니다. "
+                    "CAD 프로그램(AutoCAD 등)에서 도면을 'AutoCAD 2000 DXF(AC1015)' 이상 표준 규격으로 "
+                    "다시 저장(Save As)한 뒤 업로드해 주세요."
+                )
+            else:
+                detail = (
+                    "도면 내 경량 폴리라인(LWPOLYLINE)에 필수 하위 클래스 식별자(AcDbPolyline)가 누락되어 있습니다. "
+                    "CAD 프로그램에서 도면을 표준 DXF 2000(AC1015) 이상으로 다시 저장한 뒤 업로드해 주세요."
+                )
+            raise DxfLoadError(LoadErrorCode.DXF_STRUCTURE_ERROR, detail) from exc
+        raise DxfLoadError(LoadErrorCode.DXF_STRUCTURE_ERROR, exc_str) from exc
     except (ValueError, UnicodeDecodeError, EOFError, IndexError, KeyError) as exc:
         raise DxfLoadError(LoadErrorCode.DXF_STRUCTURE_ERROR, type(exc).__name__) from exc
     return LoadedDxf(

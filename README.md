@@ -28,32 +28,33 @@
 
 ---
 
-## 2. 빠른 시작 (Local Setup)
+## 2. 빠른 시작 (One-Click Local Setup)
 
-### 사전 준비물
-- Python 3.12+ 및 [`uv`](https://github.com/astral-sh/uv)
-- Node.js 20+ 및 `npm`
-
-### 1) 의존성 설치
+### 원클릭 로컬 구동 (권장)
 ```bash
-# Python 백엔드 및 cad_engine
+./scripts/dev-start.sh
+```
+- 사전 필수 환경(Python 3.12+, Node 20+) 및 포트 충돌(8000, 3000)을 자동 진단하고 백엔드와 프론트엔드를 한 번에 실행합니다.
+- 웹 브라우저에서 **`http://localhost:3000`** 접속 후, 상단 **[⚡ 실전 데모 프로젝트 불러오기]**를 누르면 1초 만에 3종 도면(IMAGE, DXF, PDF)이 로드됩니다.
+- 서비스 종료 시 터미널에서 `Ctrl + C` 또는 `./scripts/dev-stop.sh`를 실행합니다.
+
+### 상세 문서 안내
+- 📖 **PO 시연 클릭 매뉴얼**: [`docs/USER_SMOKE_TEST.md`](docs/USER_SMOKE_TEST.md)
+- 🚀 **통합 MVP 베타 릴리즈 노트**: [`docs/MVP_BETA_RELEASE_NOTES.md`](docs/MVP_BETA_RELEASE_NOTES.md)
+- 🛠️ **AutoCAD R12 호환성 가이드**: [`docs/DXF_R12_COMPATIBILITY_GUIDE.md`](docs/DXF_R12_COMPATIBILITY_GUIDE.md)
+
+### 수동 실행 (Manual Setup)
+```bash
+# 1. 의존성 설치
 uv sync
-
-# 프론트엔드 (Next.js)
 npm --prefix apps/web install
-```
 
-### 2) 백엔드 API 서버 실행 (포트 8000)
-```bash
-# 로컬 단일 사용자 보안 정책에 따라 127.0.0.1 루프백 바인딩을 기본 권장합니다.
-PYTHONPATH=apps/api/src:packages/cad_engine/src uv run uvicorn eai_api.app:app --host 127.0.0.1 --port 8000 --reload
-```
+# 2. 백엔드 API 실행 (포트 8000)
+PYTHONPATH=apps/api/src:packages/cad_engine/src uv run uvicorn eai_api.app:app --host 127.0.0.1 --port 8000
 
-### 3) 프론트엔드 웹 앱 실행 (포트 3000)
-```bash
+# 3. 프론트엔드 실행 (포트 3000)
 npm --prefix apps/web run dev
 ```
-브라우저에서 `http://localhost:3000`에 접속합니다.
 
 ---
 
