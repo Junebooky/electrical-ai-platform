@@ -9,8 +9,10 @@ Verifies:
 6. Takeoff aggregation & Excel/CSV export integration with verified candidates.
 """
 
+import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 from eai_api.app import app
 from eai_api.storage import Storage
@@ -322,4 +324,193 @@ def test_candidate_preservation_on_redetect(client: TestClient) -> None:
     det2 = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/detect").json()
     assert det2["summary"]["accepted"] == 8
     assert det2["summary"]["proposed"] == 0
+
+
+def test_p0_qty_01_no_duplicate_ea_for_mapped_cad_objects(client: TestClient) -> None:
+    """[P0-QTY-01] Mapped DXF INSERT must not be double counted when candidate is accepted.
+    Oracle: mapped LIGHT 1EA -> detect/approve -> still 1EA, Evidence included 1건, CSV/XLSX 1EA.
+    """
+    p_resp = client.post("/api/projects", json={"name": "P0-QTY-01 Test"})
+    proj_id = p_resp.json()["id"]
+
+    dxf_bytes = DXF_FIXTURE_PATH.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("basic_devices.dxf", dxf_bytes, "application/dxf")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # 1. Add block mapping: map LT-DL to LIGHT
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/mappings",
+        json=[{"block_name": "LT-DL", "item_code": "LIGHT", "item_name": "다운라이트"}],
+    )
+
+    # Base takeoff before detection: 6 LT-DL blocks mapped to LIGHT -> 6 EA
+    t_before = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff").json()
+    summary_before = {r["item_code"]: r["quantity"] for r in t_before["summary"]}
+    assert summary_before.get("LIGHT") == 6
+    included_before = [e for e in t_before["evidence"] if e["inclusion_status"] == "INCLUDED" and e["mapped_item_code"] == "LIGHT"]
+    assert len(included_before) == 6
+
+    # 2. Run detection (finds candidates for LT-DL and unmapped OT-2P, SW-1)
+    det_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/detect")
+    assert det_resp.status_code == 200
+
+    # 3. Accept all candidates
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json={"action": "ACCEPT_ALL"},
+    )
+
+    # 4. Takeoff after approval: LIGHT MUST STILL BE EXACTLY 6 EA, NOT 12 EA! (P0-QTY-01)
+    t_after = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff").json()
+    summary_after = {r["item_code"]: r["quantity"] for r in t_after["summary"]}
+    assert summary_after.get("LIGHT") == 6, f"Expected 6 EA but got {summary_after.get('LIGHT')}"
+
+    included_after = [e for e in t_after["evidence"] if e["inclusion_status"] == "INCLUDED" and e["mapped_item_code"] == "LIGHT"]
+    assert len(included_after) == 6, f"Expected exactly 6 included evidence rows, got {len(included_after)}"
+
+    # 5. CSV and XLSX export must show 6 EA
+    csv_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/csv?type=summary")
+    assert csv_resp.status_code == 200
+    assert "LIGHT,다운라이트,,EA,6" in csv_resp.text.replace(" ", "")
+
+    xlsx_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/export/xlsx")
+    assert xlsx_resp.status_code == 200
+    assert len(xlsx_resp.content) > 1000
+
+
+def test_p0_qty_02_blocked_dxf_cannot_be_revived_by_candidate_approval(client: TestClient) -> None:
+    """[P0-QTY-02] Structurally blocked DXF INSERT (dynamic/anonymous) must not be revived by candidate approval.
+    Oracle: blocked INSERT -> detector -> ACCEPT_ALL -> 0 included EA + UNRESOLVED warning.
+    """
+    p_resp = client.post("/api/projects", json={"name": "P0-QTY-02 Test"})
+    proj_id = p_resp.json()["id"]
+
+    anon_dxf_path = Path("fixtures/dxf/anonymous_and_dynamic.dxf")
+    dxf_bytes = anon_dxf_path.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("anonymous_and_dynamic.dxf", dxf_bytes, "application/dxf")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # 1. Run detection on dynamic/anonymous block drawing
+    det_resp = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/detect")
+    assert det_resp.status_code == 200
+    cands = det_resp.json()["candidates"]
+    assert len(cands) > 0
+    # Every detected candidate from dynamic/anonymous blocks must be flagged as structurally blocked
+    for c in cands:
+        assert c["raw_evidence"].get("is_structurally_blocked") is True
+        assert c["confidence"] == 0.0
+        assert "검수불가" in c["suggested_item_name"]
+
+    # 2. Call ACCEPT_ALL
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json={"action": "ACCEPT_ALL"},
+    )
+
+    # 3. Takeoff must enforce 0 included EA and report UNRESOLVED
+    t_resp = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/takeoff")
+    takeoff = t_resp.json()
+
+    included_ev = [e for e in takeoff["evidence"] if e["inclusion_status"] == "INCLUDED"]
+    assert len(included_ev) == 0, f"Expected 0 included evidence rows, got {len(included_ev)}"
+
+    for row in takeoff["summary"]:
+        assert row["quantity"] == 0
+        assert row["review_status"] == "UNRESOLVED"
+
+
+def test_p0_qty_03_bulk_accept_reject_preserves_existing_decisions(client: TestClient) -> None:
+    """[P0-QTY-03] Bulk ACCEPT_ALL/REJECT_ALL must only modify status == PROPOSED.
+    Oracle: 1 accepted, 1 rejected, 1 proposed -> ACCEPT_ALL -> 2 accepted, 1 rejected;
+    subsequent REJECT_ALL does not change previously decided 2 accepted and 1 rejected.
+    """
+    p_resp = client.post("/api/projects", json={"name": "P0-QTY-03 Test"})
+    proj_id = p_resp.json()["id"]
+
+    img_bytes = IMAGE_FIXTURE_PATH.read_bytes()
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/drawings",
+        files={"file": ("floorplan_sample.png", img_bytes, "image/png")},
+    )
+    dwg_id = up_resp.json()["drawing_id"]
+
+    # 1. Detect candidates (8 candidates)
+    det = client.post(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/detect").json()
+    cands = det["candidates"]
+    c1, c2 = cands[0], cands[1]
+
+    # Pre-set 1 ACCEPTED, 1 REJECTED, and leave the remaining 6 as PROPOSED
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json={
+            "updates": [
+                {"candidate_id": c1["candidate_id"], "status": "ACCEPTED", "review_note": "수동 승인 1"},
+                {"candidate_id": c2["candidate_id"], "status": "REJECTED", "review_note": "수동 거부 2"},
+            ]
+        },
+    )
+
+    pre_check = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates").json()["summary"]
+    assert pre_check["accepted"] == 1
+    assert pre_check["rejected"] == 1
+    assert pre_check["proposed"] == 6
+
+    # 2. Call ACCEPT_ALL -> only the 6 PROPOSED items become ACCEPTED
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json={"action": "ACCEPT_ALL"},
+    )
+    after_accept = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates").json()["summary"]
+    assert after_accept["accepted"] == 7  # 1 pre-accepted + 6 newly accepted
+    assert after_accept["rejected"] == 1  # 1 pre-rejected MUST REMAIN REJECTED!
+    assert after_accept["proposed"] == 0
+
+    # 3. Call REJECT_ALL -> since proposed is 0, nothing should change!
+    client.put(
+        f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates/review",
+        json={"action": "REJECT_ALL"},
+    )
+    after_reject = client.get(f"/api/projects/{proj_id}/drawings/{dwg_id}/candidates").json()["summary"]
+    assert after_reject["accepted"] == 7, "ACCEPTED candidates must not be overridden by REJECT_ALL"
+    assert after_reject["rejected"] == 1, "REJECTED candidates must remain 1"
+    assert after_reject["proposed"] == 0
+
+
+def test_p0_stab_04_image_clustering_complexity_and_large_block() -> None:
+    """[P0-STAB-04] Verify O(1) incremental clustering on dense 100x100 mask + adjacent symbol.
+    Oracle: finishes well under budget, outputs exactly 2 distinct clusters with no duplicates.
+    """
+    from eai_api.detector import _cluster_image_points
+
+    # 500x500 binary mask with a 100x100 solid block (10,000 px) and a 20x20 block (400 px)
+    mask = np.zeros((500, 500), dtype=bool)
+    mask[50:150, 50:150] = True
+    mask[300:320, 300:320] = True
+
+    t0 = time.perf_counter()
+    clusters = _cluster_image_points(mask, min_pixels=10, max_dist=30)
+    elapsed = time.perf_counter() - t0
+
+    # Must complete fast (under 100ms) with incremental complexity
+    assert elapsed < 0.1, f"Clustering took too long: {elapsed * 1000:.1f}ms"
+    assert len(clusters) == 2, f"Expected exactly 2 clusters, got {len(clusters)}"
+
+    # Sort clusters by pixel count
+    clusters.sort(key=lambda c: c["count"], reverse=True)
+    large_c = clusters[0]
+    small_c = clusters[1]
+
+    assert large_c["count"] == 10000
+    assert 95.0 <= large_c["cx"] <= 105.0
+    assert 95.0 <= large_c["cy"] <= 105.0
+
+    assert small_c["count"] == 400
+    assert 305.0 <= small_c["cx"] <= 315.0
+    assert 305.0 <= small_c["cy"] <= 315.0
 

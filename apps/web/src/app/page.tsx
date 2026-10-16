@@ -390,11 +390,14 @@ export default function WorkspacePage() {
   // Issue #23: Run candidate detection
   const handleRunDetection = async () => {
     if (!currentProject || !currentDrawing) return;
+    const targetDrawingId = currentDrawing.drawing_id;
     setIsDetecting(true);
     try {
-      const res = await api.detectCandidates(currentProject.id, currentDrawing.drawing_id);
-      setCandidates(res.candidates);
-      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+      const res = await api.detectCandidates(currentProject.id, targetDrawingId);
+      if (activeDrawingIdRef.current === targetDrawingId) {
+        setCandidates(res.candidates);
+        await refreshTakeoff(currentProject.id, targetDrawingId);
+      }
     } catch (err: unknown) {
       setErrorMessage("기호 탐지 실패: " + (err instanceof Error ? err.message : String(err)));
     } finally {
@@ -405,15 +408,18 @@ export default function WorkspacePage() {
   // Issue #23: Review candidates (single or bulk)
   const handleCandidateReview = async (req: CandidateBulkReviewRequest) => {
     if (!currentProject || !currentDrawing) return;
+    const targetDrawingId = currentDrawing.drawing_id;
     setIsSaving(true);
     try {
-      const res = await api.reviewCandidates(currentProject.id, currentDrawing.drawing_id, req);
-      setCandidates(res.candidates);
-      if (selectedCandidate) {
-        const updated = res.candidates.find((c) => c.candidate_id === selectedCandidate.candidate_id);
-        setSelectedCandidate(updated || null);
+      const res = await api.reviewCandidates(currentProject.id, targetDrawingId, req);
+      if (activeDrawingIdRef.current === targetDrawingId) {
+        setCandidates(res.candidates);
+        if (selectedCandidate) {
+          const updated = res.candidates.find((c) => c.candidate_id === selectedCandidate.candidate_id);
+          setSelectedCandidate(updated || null);
+        }
+        await refreshTakeoff(currentProject.id, targetDrawingId);
       }
-      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
     } catch (err: unknown) {
       setErrorMessage("기호 검수 반영 실패: " + (err instanceof Error ? err.message : String(err)));
     } finally {

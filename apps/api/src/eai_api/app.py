@@ -799,15 +799,19 @@ def review_drawing_candidates(
                 continue
 
             if req.action == "ACCEPT_ALL":
-                c.status = CandidateStatus.ACCEPTED
-                c.reviewed_at = now
-                if not c.review_note:
-                    c.review_note = "일괄 승인"
+                # P0-QTY-03: Only approve currently PROPOSED candidates, preserving existing ACCEPTED/REJECTED decisions
+                if c.status == CandidateStatus.PROPOSED:
+                    c.status = CandidateStatus.ACCEPTED
+                    c.reviewed_at = now
+                    if not c.review_note:
+                        c.review_note = "일괄 승인"
             elif req.action == "REJECT_ALL":
-                c.status = CandidateStatus.REJECTED
-                c.reviewed_at = now
-                if not c.review_note:
-                    c.review_note = "일괄 거부"
+                # P0-QTY-03: Only reject currently PROPOSED candidates, preserving existing ACCEPTED/REJECTED decisions
+                if c.status == CandidateStatus.PROPOSED:
+                    c.status = CandidateStatus.REJECTED
+                    c.reviewed_at = now
+                    if not c.review_note:
+                        c.review_note = "일괄 거부"
             elif req.action == "RESET_ALL":
                 c.status = CandidateStatus.PROPOSED
                 c.reviewed_item_code = None

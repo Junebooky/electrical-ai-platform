@@ -365,6 +365,15 @@ export function CandidateReviewTable({
           })
         )}
       </div>
+
+      {/* Footer domain notice (P1 copy & domain safety) */}
+      <div className="p-2.5 border-t border-slate-800 bg-slate-950/80 text-[11px] text-slate-400 flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-amber-400">
+          <Clock size={12} />
+          <span>규칙 기반 후보 · 검수 전 0 EA 보장</span>
+        </span>
+        <span className="text-[10px] text-slate-400">승인 항목만 물량 반영</span>
+      </div>
     </div>
   );
 }

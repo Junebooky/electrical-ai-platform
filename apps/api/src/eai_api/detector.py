@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 import numpy as np
+from cad_engine.schema import WarningCode
 from PIL import Image
 
 from .models import (
@@ -25,8 +26,42 @@ from .pdf_features import extract_pdf_page_features
 
 
 # ---------------------------------------------------------------------------
-# 1. DXF Symbol Detection
+# 1. DXF Symbol Detection & Structural Eligibility (P0-QTY-02)
 # ---------------------------------------------------------------------------
+def get_dxf_structural_block_reason(
+    obj: Any,
+    parent_ids: set[str] | None = None,
+) -> str | None:
+    """Fail-closed structural eligibility check sharing aggregate/storage invariants (P0-QTY-02)."""
+    warnings = getattr(obj, "warnings", []) or []
+    for code in (
+        WarningCode.XREF_UNRESOLVED,
+        WarningCode.MISSING_BLOCK_DEFINITION,
+        WarningCode.CIRCULAR_BLOCK_REFERENCE,
+    ):
+        if code in warnings:
+            return "구조적 결함(외부참조/블록정의 누락/순환참조)"
+    for code in (
+        WarningCode.DYNAMIC_BLOCK,
+        WarningCode.ANONYMOUS_BLOCK,
+    ):
+        if code in warnings:
+            return "동적/익명 블록: 가시성·구조 검수 필요"
+    if parent_ids and getattr(obj, "id", None) in parent_ids:
+        return "중첩 블록 계층(상위 어셈블리): 집계 기준 미확정(A05)"
+    if (
+        getattr(obj, "depth", 0) > 0
+        or WarningCode.NESTED_BLOCK in warnings
+        or getattr(obj, "parent_id", None) is not None
+    ):
+        return "중첩 블록: 집계 기준 미확정(A05)"
+    if not getattr(obj, "visible", True):
+        return "꺼짐/동결 레이어"
+    if not getattr(obj, "is_count_candidate", True) and getattr(obj, "depth", 0) == 0:
+        return "비집계 대상 객체(is_count_candidate=False)"
+    return None
+
+
 def detect_dxf_candidates(
     drawing: Any,
     drawing_id: str,
@@ -40,16 +75,19 @@ def detect_dxf_candidates(
             rule_map[r.block_name] = r
 
     objects = getattr(drawing, "objects", []) or []
-    for idx, obj in enumerate(objects):
-        if getattr(obj, "entity_type", "") != "INSERT":
-            continue
+    cad_objects = [obj for obj in objects if getattr(obj, "entity_type", "") == "INSERT"]
+    parent_ids = {o.parent_id for o in cad_objects if getattr(o, "parent_id", None) is not None}
 
+    for idx, obj in enumerate(cad_objects):
         block_name = getattr(obj, "block_name", "") or ""
         layer = getattr(obj, "layer", "") or ""
         pt = getattr(obj, "insert_point", None)
         x = float(pt[0]) if pt else 0.0
         y = float(pt[1]) if pt else 0.0
         obj_id = getattr(obj, "id", f"ins_{idx}")
+
+        struct_reason = get_dxf_structural_block_reason(obj, parent_ids)
+        is_blocked = struct_reason is not None
 
         # Check existing mapping rule first
         if block_name in rule_map:
@@ -58,30 +96,33 @@ def detect_dxf_candidates(
                 continue
             item_code = rule.item_code
             item_name = rule.item_name or rule.item_code
-            confidence = 0.98
+            confidence = 0.98 if not is_blocked else 0.0
         else:
             # Heuristic classification based on block name and layer
             combined = f"{block_name} {layer}"
             if re.search(r"(?:LIGHT|LT[-_]?|DL|전등|조명|다운라이트)", combined, re.I):
                 item_code = "LIGHT"
                 item_name = "조명기구"
-                confidence = 0.95
+                confidence = 0.95 if not is_blocked else 0.0
             elif re.search(r"(?:OUTLET|CON(?:SOLET)?|전열|콘센트)", combined, re.I):
                 item_code = "OUTLET"
                 item_name = "전열 콘센트"
-                confidence = 0.95
+                confidence = 0.95 if not is_blocked else 0.0
             elif re.search(r"(?:SW(?:ITCH)?|스위치)", combined, re.I):
                 item_code = "SWITCH"
                 item_name = "스위치"
-                confidence = 0.95
+                confidence = 0.95 if not is_blocked else 0.0
             elif re.search(r"(?:PANEL|DB[-_]?|DIST|분전반|배전반)", combined, re.I):
                 item_code = "PANEL"
                 item_name = "분전반"
-                confidence = 0.95
+                confidence = 0.95 if not is_blocked else 0.0
             else:
                 item_code = "MISC_ELEC"
                 item_name = block_name or "기타 전기설비"
-                confidence = 0.75
+                confidence = 0.75 if not is_blocked else 0.0
+
+        if is_blocked:
+            item_name = f"{item_name} (검수불가: {struct_reason})"
 
         cand = SymbolCandidate(
             candidate_id=f"cand_dxf_{drawing_id}_{obj_id}",
@@ -100,6 +141,8 @@ def detect_dxf_candidates(
                 "source_object_id": obj_id,
                 "block_name": block_name,
                 "layer": layer,
+                "is_structurally_blocked": is_blocked,
+                "structural_block_reason": struct_reason,
             },
         )
         candidates.append(cand)
@@ -173,43 +216,131 @@ def detect_pdf_candidates(
 
 
 # ---------------------------------------------------------------------------
-# 3. Raster Image Symbol Detection
+# 3. Raster Image Symbol Detection (P0-STAB-04)
 # ---------------------------------------------------------------------------
 def _cluster_image_points(
     mask: np.ndarray[Any, Any],
     min_pixels: int = 10,
     max_dist: int = 30,
+    max_pixels: int = 100_000,
 ) -> list[dict[str, Any]]:
-    """Cluster binary mask points within max_dist into distinct symbols."""
+    """Cluster binary mask points using incremental union-find and spatial hashing.
+
+    Complexity: O(N) where N <= max_pixels with O(1) centroid and bounding box accumulation,
+    preventing quadratic CPU blowup on dense masks (P0-STAB-04).
+    """
     ys, xs = np.where(mask)
-    if len(xs) == 0:
+    n = len(xs)
+    if n == 0:
         return []
 
-    points = list(zip(xs, ys, strict=False))
+    step = max(1, n // max_pixels)
+    xs_sampled = xs[::step]
+    ys_sampled = ys[::step]
+
+    cell_size = max_dist
+    grid: dict[tuple[int, int], int] = {}
+    parent: list[int] = []
+
+    def find(i: int) -> int:
+        path: list[int] = []
+        while parent[i] != i:
+            path.append(i)
+            i = parent[i]
+        for node in path:
+            parent[node] = i
+        return i
+
+    def union(i: int, j: int) -> int:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+            return ri
+        return ri
+
     clusters: list[dict[str, Any]] = []
 
-    for p in points:
-        placed = False
-        for c in clusters:
-            if abs(p[0] - c["cx"]) < max_dist and abs(p[1] - c["cy"]) < max_dist:
-                c["points"].append(p)
-                c["cx"] = sum(pt[0] for pt in c["points"]) / len(c["points"])
-                c["cy"] = sum(pt[1] for pt in c["points"]) / len(c["points"])
-                placed = True
-                break
-        if not placed:
-            clusters.append({"points": [p], "cx": float(p[0]), "cy": float(p[1])})
+    for x_i, y_i in zip(xs_sampled, ys_sampled, strict=False):
+        x = int(x_i)
+        y = int(y_i)
+        cx_cell = x // cell_size
+        cy_cell = y // cell_size
+
+        touching_clusters: set[int] = set()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                c_idx = grid.get((cx_cell + dx, cy_cell + dy))
+                if c_idx is not None:
+                    touching_clusters.add(find(c_idx))
+
+        if not touching_clusters:
+            new_idx = len(clusters)
+            parent.append(new_idx)
+            clusters.append({
+                "sum_x": x,
+                "sum_y": y,
+                "count": 1,
+                "min_x": x,
+                "max_x": x,
+                "min_y": y,
+                "max_y": y,
+            })
+            grid[(cx_cell, cy_cell)] = new_idx
+        else:
+            root: int | None = None
+            for tc in touching_clusters:
+                root = tc if root is None else union(root, tc)
+
+            assert root is not None
+            c = clusters[root]
+            c["sum_x"] += x
+            c["sum_y"] += y
+            c["count"] += 1
+            if x < c["min_x"]:
+                c["min_x"] = x
+            if x > c["max_x"]:
+                c["max_x"] = x
+            if y < c["min_y"]:
+                c["min_y"] = y
+            if y > c["max_y"]:
+                c["max_y"] = y
+            grid[(cx_cell, cy_cell)] = root
+
+    merged: dict[int, dict[str, Any]] = {}
+    for idx, c in enumerate(clusters):
+        root = find(idx)
+        if root not in merged:
+            merged[root] = {
+                "sum_x": 0,
+                "sum_y": 0,
+                "count": 0,
+                "min_x": 10**9,
+                "max_x": -(10**9),
+                "min_y": 10**9,
+                "max_y": -(10**9),
+            }
+        m = merged[root]
+        m["sum_x"] += c["sum_x"]
+        m["sum_y"] += c["sum_y"]
+        m["count"] += c["count"]
+        if c["min_x"] < m["min_x"]:
+            m["min_x"] = c["min_x"]
+        if c["max_x"] > m["max_x"]:
+            m["max_x"] = c["max_x"]
+        if c["min_y"] < m["min_y"]:
+            m["min_y"] = c["min_y"]
+        if c["max_y"] > m["max_y"]:
+            m["max_y"] = c["max_y"]
 
     results: list[dict[str, Any]] = []
-    for c in clusters:
-        if len(c["points"]) >= min_pixels:
-            c_xs = [pt[0] for pt in c["points"]]
-            c_ys = [pt[1] for pt in c["points"]]
+    for m in merged.values():
+        if m["count"] * step >= min_pixels:
+            cnt = m["count"]
             results.append({
-                "cx": round(c["cx"], 1),
-                "cy": round(c["cy"], 1),
-                "bbox": [float(min(c_xs)), float(min(c_ys)), float(max(c_xs)), float(max(c_ys))],
-                "count": len(c["points"]),
+                "cx": round(m["sum_x"] / cnt, 1),
+                "cy": round(m["sum_y"] / cnt, 1),
+                "bbox": [float(m["min_x"]), float(m["min_y"]), float(m["max_x"]), float(m["max_y"])],
+                "count": m["count"] * step,
             })
     return results
 

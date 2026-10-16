@@ -501,6 +501,15 @@ def build_takeoff_result(
     # 1. Process CAD Objects
     cad_objects = [obj for obj in drawing.objects if obj.entity_type == "INSERT"]
     parent_ids = {o.parent_id for o in cad_objects if o.parent_id is not None}
+    cad_object_ids = {str(o.id) for o in cad_objects}
+
+    # P0-QTY-01: Index candidates targeting CAD objects to prevent double counting
+    candidate_by_cad_id: dict[str, SymbolCandidate] = {}
+    if candidates:
+        for cand in candidates:
+            sid = cand.raw_evidence.get("source_object_id") if cand.raw_evidence else None
+            if sid:
+                candidate_by_cad_id[str(sid)] = cand
 
     # Step 1: Compute tentative statuses including structural & domain blocking & reviews
     tentative_status: dict[str, dict[str, Any]] = {}
@@ -538,11 +547,12 @@ def build_takeoff_result(
             rev_status = ReviewStatus.UNREVIEWED
             reason = "미매핑 블록"
 
-        # Structural & Domain blocking check (AC-06 / DEC-014 / QA-09-C, QA-09-D):
+        # Structural & Domain blocking check (AC-06 / DEC-014 / QA-09-C, QA-09-D / P0-QTY-02):
         # The following CAD entities MUST NEVER be forcefully included into verified CAD counts:
         # 1. Structural defects (XREF, missing block definitions, circular references)
         # 2. Dynamic blocks & anonymous blocks (DEC-014 / QA-09-C)
         # 3. Nested block hierarchies (both nested children and parent assemblies) (DEC-014 / QA-09-D)
+        # 4. is_count_candidate=False
         is_xref_or_def_blocked = any(
             code in obj.warnings
             for code in (
@@ -564,11 +574,22 @@ def build_takeoff_result(
             or obj.parent_id is not None
             or obj.id in parent_ids
         )
+        is_count_candidate_blocked = not getattr(obj, "is_count_candidate", True) and obj.depth == 0
+
+        # Also check candidate-level structural diagnosis (P0-QTY-02)
+        cand_for_obj = candidate_by_cad_id.get(str(obj.id))
+        is_cand_blocked = bool(
+            cand_for_obj
+            and cand_for_obj.raw_evidence
+            and cand_for_obj.raw_evidence.get("is_structurally_blocked")
+        )
 
         is_structurally_blocked = (
             is_xref_or_def_blocked
             or is_dynamic_or_anon_blocked
             or is_nested_hierarchy_blocked
+            or is_count_candidate_blocked
+            or is_cand_blocked
         )
 
         # Apply User Review Override
@@ -609,6 +630,53 @@ def build_takeoff_result(
                     reason = override.reason
             if override.mapped_item_code:
                 base_item_code = override.mapped_item_code
+        elif cand_for_obj:
+            # P0-QTY-01: Symbol candidate exists for this CAD object. Apply candidate decision in-place.
+            cand_effective_code = cand_for_obj.reviewed_item_code or cand_for_obj.suggested_item_code
+            if cand_for_obj.status == CandidateStatus.ACCEPTED:
+                if cand_effective_code and cand_effective_code not in ("EXCLUDE", "UNMAPPED") and cand_effective_code not in conflicted_codes:
+                    if is_structurally_blocked or is_canonical_conflict:
+                        # P0-QTY-02: Blocked/unverified objects MUST NOT be revived by candidate approval
+                        inc_status = InclusionStatus.EXCLUDED
+                        rev_status = ReviewStatus.UNRESOLVED
+                        block_diag = (
+                            cand_for_obj.raw_evidence.get("structural_block_reason")
+                            if cand_for_obj.raw_evidence
+                            else None
+                        ) or "구조적 결함/비집계 블록"
+                        reason = f"구조상 집계 불가 객체는 후보 승인으로 포함 불가: {block_diag}"
+                        base_item_code = cand_effective_code
+                    else:
+                        inc_status = InclusionStatus.INCLUDED
+                        rev_status = ReviewStatus.REVIEWED
+                        reason = cand_for_obj.review_note or f"기호 검수 승인 ({cand_for_obj.detection_source})"
+                        base_item_code = cand_effective_code
+                        if base_item_code not in item_meta:
+                            item_meta[base_item_code] = ItemMappingRule(
+                                block_name=f"[CANDIDATE:{cand_for_obj.detection_source}]",
+                                item_code=base_item_code,
+                                item_name=cand_for_obj.suggested_item_name or base_item_code,
+                                unit="EA",
+                                specification="",
+                            )
+            elif cand_for_obj.status == CandidateStatus.REJECTED:
+                if base_disp == Disposition.UNMAPPED:
+                    inc_status = InclusionStatus.EXCLUDED
+                    rev_status = ReviewStatus.REVIEWED
+                    reason = cand_for_obj.review_note or "기호 검수 거부"
+            elif is_structurally_blocked:
+                inc_status = InclusionStatus.EXCLUDED
+                rev_status = ReviewStatus.UNRESOLVED
+                if is_dynamic_or_anon_blocked:
+                    reason = "동적/익명 블록: 가시성·구조 검수 필요"
+                elif is_nested_hierarchy_blocked:
+                    reason = (
+                        "중첩 블록 계층(상위 어셈블리): 집계 기준 미확정(A05)"
+                        if obj.id in parent_ids
+                        else "중첩 블록: 집계 기준 미확정(A05)"
+                    )
+                else:
+                    reason = "외부참조(XREF) 또는 블록 정의 누락으로 집계 불가"
         elif is_structurally_blocked:
             inc_status = InclusionStatus.EXCLUDED
             rev_status = ReviewStatus.UNRESOLVED
@@ -779,6 +847,12 @@ def build_takeoff_result(
         for cand in candidates:
             # Domain Invariant: PROPOSED and REJECTED candidates MUST NEVER contribute to takeoff
             if cand.status != CandidateStatus.ACCEPTED:
+                continue
+
+            # P0-QTY-01: If this candidate is linked to a CAD object, its status and 1 EA was already
+            # processed into the CAD object row in #1. NEVER create a duplicate row!
+            cand_obj_id = cand.raw_evidence.get("source_object_id") if cand.raw_evidence else None
+            if cand_obj_id and (str(cand_obj_id) in cad_object_ids or cand.candidate_id in cad_object_ids):
                 continue
 
             effective_code = cand.reviewed_item_code or cand.suggested_item_code
