@@ -38,6 +38,8 @@ import {
   Check,
   X,
   Play,
+  Crop,
+  CheckCircle2,
 } from "lucide-react";
 
 export default function WorkspacePage() {
@@ -61,6 +63,17 @@ export default function WorkspacePage() {
   const [selectedCandidate, setSelectedCandidate] = useState<SymbolCandidate | null>(null);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [showCandidates, setShowCandidates] = useState<boolean>(true);
+
+  // Issue #29: Interactive User-Defined Visual Symbol Search
+  const [isCropSearchMode, setIsCropSearchMode] = useState<boolean>(false);
+  const [cropModalOpen, setCropModalOpen] = useState<boolean>(false);
+  const [pendingCropBbox, setPendingCropBbox] = useState<[number, number, number, number] | null>(null);
+  const [cropSearchItemCode, setCropSearchItemCode] = useState<string>("LIGHT");
+  const [cropSearchThreshold, setCropSearchThreshold] = useState<number>(0.75);
+  const [cropSearchIncludeRotations, setCropSearchIncludeRotations] = useState<boolean>(true);
+  const [cropSearchAllPages, setCropSearchAllPages] = useState<boolean>(false);
+  const [isSearchingSymbols, setIsSearchingSymbols] = useState<boolean>(false);
+  const [searchSuccessMessage, setSearchSuccessMessage] = useState<string | null>(null);
 
   interface PendingManualMarker {
     drawingId: string;
@@ -428,6 +441,80 @@ export default function WorkspacePage() {
     }
   };
 
+  // Issue #29: Interactive User-Defined Visual Symbol Search
+  const handleCropComplete = useCallback((bbox: [number, number, number, number]) => {
+    setPendingCropBbox(bbox);
+    setCropModalOpen(true);
+    setIsCropSearchMode(false);
+  }, []);
+
+  const handleRunSymbolSearch = useCallback(async () => {
+    if (!currentProject || !currentDrawing || !pendingCropBbox) return;
+    const targetDrawingId = currentDrawing.drawing_id;
+    setIsSearchingSymbols(true);
+    setErrorMessage(null);
+    setSearchSuccessMessage(null);
+    try {
+      const itemName =
+        availableItems.find((i) => i.code === cropSearchItemCode)?.name || cropSearchItemCode;
+      const res = await api.searchSymbol(currentProject.id, targetDrawingId, {
+        sample_bbox: pendingCropBbox,
+        page_index: currentPageIndex,
+        suggested_item_code: cropSearchItemCode,
+        suggested_item_name: itemName,
+        threshold: cropSearchThreshold,
+        search_all_pages: cropSearchAllPages,
+      });
+
+      if (activeDrawingIdRef.current === targetDrawingId) {
+        const updatedCandRes = await api.getCandidates(currentProject.id, targetDrawingId);
+        setCandidates(updatedCandRes.candidates || []);
+        setCropModalOpen(false);
+        setPendingCropBbox(null);
+        setActiveRightTab("candidates");
+        if (res.total_found > 0) {
+          const avgConf =
+            res.candidates.length > 0
+              ? Math.round(
+                  (res.candidates.reduce((acc, c) => acc + c.confidence, 0) /
+                    res.candidates.length) *
+                    100
+                )
+              : Math.round(cropSearchThreshold * 100);
+          setSearchSuccessMessage(
+            `성공: ${res.total_found}건의 유사 기호(${cropSearchItemCode})를 탐지했습니다. (평균 유사도: ${avgConf}%)`
+          );
+        } else {
+          setErrorMessage(
+            `선택한 영역과 유사도 ${Math.round(cropSearchThreshold * 100)}% 이상 일치하는 기호를 찾지 못했습니다. 임계값을 낮추거나 영역을 다시 지정해보세요.`
+          );
+        }
+        await refreshTakeoff(currentProject.id, targetDrawingId);
+      }
+    } catch (err: unknown) {
+      console.error("Failed visual symbol search", err);
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+          ? err.message
+          : "기호 검색에 실패했습니다.";
+      setErrorMessage(`기호 검색 실패: ${msg}`);
+    } finally {
+      setIsSearchingSymbols(false);
+    }
+  }, [
+    currentProject,
+    currentDrawing,
+    pendingCropBbox,
+    currentPageIndex,
+    cropSearchItemCode,
+    availableItems,
+    cropSearchThreshold,
+    cropSearchAllPages,
+    refreshTakeoff,
+  ]);
+
   // Toggle Layer visibility
   const toggleLayer = (layerName: string) => {
     setHiddenLayers((prev) => {
@@ -666,6 +753,7 @@ export default function WorkspacePage() {
           <button
             onClick={handleSeedDemo}
             disabled={isLoading}
+            data-testid="btn-live-demo"
             className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-emerald-600/20 transition"
             title="CAD·PDF·이미지 종합 실전 데모 프로젝트 로드 (템플릿 및 기호 탐지 포함)"
           >
@@ -756,15 +844,15 @@ export default function WorkspacePage() {
         </div>
       )}
 
-      {/* 2D Image Mode Notice Banner (FR-015/016) */}
+      {/* 2D Image Mode Notice Banner (FR-015/016 / Issue #29) */}
       {currentDrawing?.source_type === "IMAGE" && (
         <div className="bg-sky-950/70 border-b border-sky-800/60 px-4 py-2 text-xs text-sky-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded text-[10px] font-mono font-semibold">
-              v1.1 이미지 모드
+              v1.2 비주얼 인식 모드
             </span>
             <span>
-              ※ 2D 이미지 도면은 자동 기호 인식이 제공되지 않으며(FR-016), 상단 <b>[누락 기구 수동 추가]</b> 활성화 후 도면을 클릭하여 픽셀 좌표에 마커(EA)를 등록하고 실시간 적산표를 산출합니다.
+              ※ 2D 이미지 도면은 <b>[기호 영역 검색]</b>을 통해 드래그한 샘플 기호를 자동 탐지하거나, <b>[누락 기구 수동 추가]</b>로 직접 마커(EA)를 등록하여 적산할 수 있습니다.
             </span>
           </div>
         </div>
@@ -783,6 +871,25 @@ export default function WorkspacePage() {
           <button
             onClick={() => setErrorMessage(null)}
             className="text-red-300 hover:text-white text-xs underline"
+          >
+            닫기
+          </button>
+        </div>
+      )}
+
+      {/* Search Success Notification Banner */}
+      {searchSuccessMessage && (
+        <div
+          data-testid="search-success-banner"
+          className="bg-emerald-950/80 border-b border-emerald-800 px-4 py-2 text-xs text-emerald-200 flex items-center justify-between"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+            <span>{searchSuccessMessage}</span>
+          </div>
+          <button
+            onClick={() => setSearchSuccessMessage(null)}
+            className="text-emerald-300 hover:text-white text-xs underline"
           >
             닫기
           </button>
@@ -851,6 +958,8 @@ export default function WorkspacePage() {
                     setActiveRightTab("candidates");
                   }
                 }}
+                isCropSearchMode={isCropSearchMode}
+                onCropComplete={handleCropComplete}
               />
 
               {/* Selected AI Candidate Card (Issue #23) */}
@@ -1045,6 +1154,142 @@ export default function WorkspacePage() {
                 onClose={() => setPendingManualCoord(null)}
                 onConfirm={handleConfirmManualAdd}
               />
+
+              {/* User-Defined Visual Symbol Search Modal (Issue #29 Workstream B) */}
+              {cropModalOpen && pendingCropBbox && (
+                <div
+                  data-testid="symbol-search-modal"
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+                >
+                  <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-5 text-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-lg bg-sky-500/20 text-sky-400 border border-sky-500/30">
+                          <Crop size={18} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-100">사용자 지정 기호 검색</h3>
+                          <p className="text-[11px] text-slate-400">지정한 영역의 기호와 유사한 패턴을 도면 전체에서 검색합니다.</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setCropModalOpen(false);
+                          setPendingCropBbox(null);
+                        }}
+                        className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+
+                    {/* Selected Bbox Info */}
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300 flex items-center justify-between">
+                      <span>선택 영역 (BBox)</span>
+                      <span className="text-sky-300">
+                        [{pendingCropBbox[0]}, {pendingCropBbox[1]}] ~ [{pendingCropBbox[2]}, {pendingCropBbox[3]}]
+                        <span className="text-slate-400 ml-1.5 font-sans">
+                          ({Math.round(pendingCropBbox[2] - pendingCropBbox[0])} × {Math.round(pendingCropBbox[3] - pendingCropBbox[1])}
+                          {currentDrawing?.source_type === "PDF" ? " pt" : " px"})
+                        </span>
+                      </span>
+                    </div>
+
+                    {/* Item Code Selection */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-slate-300 block">탐지 기호 품목 매핑</label>
+                      <select
+                        value={cropSearchItemCode}
+                        onChange={(e) => setCropSearchItemCode(e.target.value)}
+                        data-testid="select-crop-search-item"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+                      >
+                        <option value="LIGHT">LIGHT (조명 설비)</option>
+                        <option value="OUTLET">OUTLET (콘센트 설비)</option>
+                        <option value="SWITCH">SWITCH (스위치 설비)</option>
+                        <option value="PANEL">PANEL (분전반)</option>
+                        {availableItems
+                          .filter((i) => !["LIGHT", "OUTLET", "SWITCH", "PANEL", "EXCLUDE", "UNMAPPED"].includes(i.code))
+                          .map((i) => (
+                            <option key={i.code} value={i.code}>
+                              {i.code} ({i.name || i.code})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+
+                    {/* Similarity Threshold Slider */}
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-xs">
+                        <span className="font-medium text-slate-300">유사도 임계값 (Threshold)</span>
+                        <span className="font-mono text-sky-400 font-semibold">{Math.round(cropSearchThreshold * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="95"
+                        step="5"
+                        value={Math.round(cropSearchThreshold * 100)}
+                        onChange={(e) => setCropSearchThreshold(Number(e.target.value) / 100)}
+                        data-testid="input-crop-threshold"
+                        className="w-full accent-sky-500 cursor-pointer"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                        <span>50% (넓은 검출)</span>
+                        <span>75% (권장 표준)</span>
+                        <span>95% (엄격한 일치)</span>
+                      </div>
+                    </div>
+
+                    {/* Options */}
+                    <div className="space-y-2 pt-1 border-t border-slate-800 text-xs text-slate-300">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={cropSearchIncludeRotations}
+                          onChange={(e) => setCropSearchIncludeRotations(e.target.checked)}
+                          className="rounded border-slate-700 text-sky-600 focus:ring-sky-500 bg-slate-950"
+                        />
+                        <span>90° / 180° / 270° 회전된 기호도 함께 검색 (권장)</span>
+                      </label>
+
+                      {currentDrawing?.source_type === "PDF" && (
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={cropSearchAllPages}
+                            onChange={(e) => setCropSearchAllPages(e.target.checked)}
+                            className="rounded border-slate-700 text-sky-600 focus:ring-sky-500 bg-slate-950"
+                          />
+                          <span>전체 페이지 일괄 검색</span>
+                        </label>
+                      )}
+                    </div>
+
+                    {/* Footer buttons */}
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                      <button
+                        onClick={() => {
+                          setCropModalOpen(false);
+                          setPendingCropBbox(null);
+                        }}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition"
+                      >
+                        취소
+                      </button>
+                      <button
+                        onClick={handleRunSymbolSearch}
+                        disabled={isSearchingSymbols}
+                        data-testid="btn-submit-symbol-search"
+                        className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white shadow-md shadow-sky-600/30 disabled:opacity-50 transition"
+                      >
+                        <Sparkles size={14} className={isSearchingSymbols ? "animate-spin" : ""} />
+                        {isSearchingSymbols ? "기호 검색 중..." : "유사 기호 탐지"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Right Panel: Split with Tabs (Takeoff, Mapping, Layers) */}
@@ -1109,6 +1354,8 @@ export default function WorkspacePage() {
                     onReview={handleCandidateReview}
                     onSelectCandidate={(cand) => setSelectedCandidate(cand)}
                     isSaving={isSaving}
+                    isCropSearchMode={isCropSearchMode}
+                    onToggleCropSearch={() => setIsCropSearchMode((prev) => !prev)}
                   />
                 )}
                 {activeRightTab === "takeoff" && takeoff && (

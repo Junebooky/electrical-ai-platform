@@ -8,7 +8,7 @@ import {
   PdfPathFeature,
   SymbolCandidate,
 } from "@/types/cad";
-import { ZoomIn, ZoomOut, Maximize2, PlusCircle } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, PlusCircle, Crop } from "lucide-react";
 
 export interface ManualMarker {
   id: string;
@@ -40,6 +40,8 @@ interface CadViewerProps {
   showCandidates?: boolean;
   selectedCandidateId?: string | null;
   onSelectCandidate?: (candidate: SymbolCandidate | null) => void;
+  isCropSearchMode?: boolean;
+  onCropComplete?: (bbox: [number, number, number, number]) => void;
 }
 
 export function CadViewer({
@@ -62,6 +64,8 @@ export function CadViewer({
   showCandidates = true,
   selectedCandidateId = null,
   onSelectCandidate,
+  isCropSearchMode = false,
+  onCropComplete,
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -86,6 +90,10 @@ export function CadViewer({
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [mouseWorld, setMouseWorld] = useState({ x: 0, y: 0 });
+  const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
+  const [cropCurrent, setCropCurrent] = useState<{ x: number; y: number } | null>(null);
+  const cropStartRef = useRef<{ x: number; y: number } | null>(null);
+  const cropCurrentRef = useRef<{ x: number; y: number } | null>(null);
 
   // Compute extents
   const extents = useMemo(() => {
@@ -212,6 +220,18 @@ export function CadViewer({
       if (target?.closest("button, .viewer-controls, [data-interactive='true']")) {
         return;
       }
+      if (isCropSearchMode && containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const wx = (mouseX - pan.x) / scale;
+        const wy = isTopLeftOrigin ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+        cropStartRef.current = { x: wx, y: wy };
+        cropCurrentRef.current = { x: wx, y: wy };
+        setCropStart({ x: wx, y: wy });
+        setCropCurrent({ x: wx, y: wy });
+        return;
+      }
       dragStartPos.current = { clientX: e.clientX, clientY: e.clientY };
       setIsDragging(true);
       setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -231,6 +251,12 @@ export function CadViewer({
       y: isImage ? Math.floor(wy) : Math.round(wy * 100) / 100,
     });
 
+    if (isCropSearchMode && (cropStartRef.current || cropStart)) {
+      cropCurrentRef.current = { x: wx, y: wy };
+      setCropCurrent({ x: wx, y: wy });
+      return;
+    }
+
     if (isDragging) {
       setPan({
         x: e.clientX - dragStart.x,
@@ -240,6 +266,36 @@ export function CadViewer({
   };
 
   const handleMouseUp = (e: React.MouseEvent) => {
+    if (isCropSearchMode && (cropStartRef.current || cropStart) && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const upWx = (mouseX - pan.x) / scale;
+      const upWy = isTopLeftOrigin ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+      const start = cropStartRef.current || cropStart!;
+      const current = cropCurrentRef.current || { x: upWx, y: upWy };
+      const x1 = Math.min(start.x, current.x, upWx);
+      const x2 = Math.max(start.x, current.x, upWx);
+      const y1 = Math.min(start.y, current.y, upWy);
+      const y2 = Math.max(start.y, current.y, upWy);
+      const bw = x2 - x1;
+      const bh = y2 - y1;
+      cropStartRef.current = null;
+      cropCurrentRef.current = null;
+      setCropStart(null);
+      setCropCurrent(null);
+      if (bw >= 4 && bh >= 4) {
+        onCropComplete?.([
+          Math.round(x1 * 100) / 100,
+          Math.round(y1 * 100) / 100,
+          Math.round(x2 * 100) / 100,
+          Math.round(y2 * 100) / 100,
+        ]);
+      }
+      setIsDragging(false);
+      dragStartPos.current = null;
+      return;
+    }
     if (dragStartPos.current) {
       const dist = Math.hypot(
         e.clientX - dragStartPos.current.clientX,
@@ -314,7 +370,7 @@ export function CadViewer({
     <div
       ref={containerRef}
       className={`relative w-full h-full overflow-hidden bg-slate-950 select-none ${
-        isAddManualMode ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"
+        isCropSearchMode || isAddManualMode ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"
       }`}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
@@ -496,8 +552,15 @@ export function CadViewer({
                 <g
                   key={obj.id}
                   transform={`translate(${ix}, ${-iy})`}
-                  className="pointer-events-auto cursor-pointer interactive-marker"
-                  onMouseDown={(e) => e.stopPropagation()}
+                  className={
+                    isCropSearchMode
+                      ? "pointer-events-none"
+                      : "pointer-events-auto cursor-pointer interactive-marker"
+                  }
+                  onMouseDown={(e) => {
+                    if (isCropSearchMode) return;
+                    e.stopPropagation();
+                  }}
                   onClick={(e) => {
                     lastCanvasClickTimeRef.current = Date.now();
                     e.stopPropagation();
@@ -567,8 +630,15 @@ export function CadViewer({
                 key={m.id}
                 data-testid={`manual-marker-${m.id}`}
                 transform={`translate(${m.x}, ${markerY})`}
-                className="pointer-events-auto cursor-pointer interactive-marker"
-                onMouseDown={(e) => e.stopPropagation()}
+                className={
+                  isCropSearchMode
+                    ? "pointer-events-none"
+                    : "pointer-events-auto cursor-pointer interactive-marker"
+                }
+                onMouseDown={(e) => {
+                  if (isCropSearchMode) return;
+                  e.stopPropagation();
+                }}
                 onClick={(e) => {
                   lastCanvasClickTimeRef.current = Date.now();
                   e.stopPropagation();
@@ -655,8 +725,15 @@ export function CadViewer({
                     <g
                       key={c.candidate_id}
                       data-testid={`candidate-marker-${c.candidate_id}`}
-                      className="pointer-events-auto cursor-pointer interactive-candidate"
-                      onMouseDown={(e) => e.stopPropagation()}
+                      className={
+                        isCropSearchMode
+                          ? "pointer-events-none"
+                          : "pointer-events-auto cursor-pointer interactive-candidate"
+                      }
+                      onMouseDown={(e) => {
+                        if (isCropSearchMode) return;
+                        e.stopPropagation();
+                      }}
                       onClick={(e) => {
                         lastCanvasClickTimeRef.current = Date.now();
                         e.stopPropagation();
@@ -716,8 +793,15 @@ export function CadViewer({
                   <g
                     key={p.source_object_id}
                     data-testid={`pdf-feature-${p.source_object_id}`}
-                    className="pointer-events-auto cursor-pointer interactive-feature"
-                    onMouseDown={(e) => e.stopPropagation()}
+                    className={
+                      isCropSearchMode
+                        ? "pointer-events-none"
+                        : "pointer-events-auto cursor-pointer interactive-feature"
+                    }
+                    onMouseDown={(e) => {
+                      if (isCropSearchMode) return;
+                      e.stopPropagation();
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelectFeature?.(p);
@@ -749,8 +833,15 @@ export function CadViewer({
                   <g
                     key={t.source_object_id}
                     data-testid={`pdf-feature-${t.source_object_id}`}
-                    className="pointer-events-auto cursor-pointer interactive-feature"
-                    onMouseDown={(e) => e.stopPropagation()}
+                    className={
+                      isCropSearchMode
+                        ? "pointer-events-none"
+                        : "pointer-events-auto cursor-pointer interactive-feature"
+                    }
+                    onMouseDown={(e) => {
+                      if (isCropSearchMode) return;
+                      e.stopPropagation();
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelectFeature?.(t);
@@ -783,8 +874,32 @@ export function CadViewer({
               })}
             </g>
           )}
+
+          {/* User-defined Symbol Crop Rubber-band Preview */}
+          {cropStart && cropCurrent && (
+            <g className="pointer-events-none" data-testid="crop-rubberband">
+              <rect
+                x={Math.min(cropStart.x, cropCurrent.x)}
+                y={Math.min(cropStart.y, cropCurrent.y)}
+                width={Math.max(Math.abs(cropCurrent.x - cropStart.x), 1)}
+                height={Math.max(Math.abs(cropCurrent.y - cropStart.y), 1)}
+                fill="rgba(56, 189, 248, 0.25)"
+                stroke="#38bdf8"
+                strokeWidth={2 / Math.max(scale, 1e-6)}
+                strokeDasharray={`${6 / Math.max(scale, 1e-6)},${3 / Math.max(scale, 1e-6)}`}
+              />
+            </g>
+          )}
         </g>
       </svg>
+
+      {/* Active Crop Search Guidance Banner */}
+      {isCropSearchMode && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-950/90 border border-sky-500/50 shadow-xl text-sky-200 text-xs font-medium animate-pulse">
+          <Crop size={14} className="text-sky-400" />
+          <span>도면에서 찾고 싶은 기호 영역을 마우스로 드래그하세요</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -13,6 +13,8 @@ import {
   MappingTemplateCreate,
   MappingTemplateListResponse,
   DemoSeedResponse,
+  SymbolSearchRequest,
+  SymbolSearchResponse,
 } from "@/types/cad";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -285,10 +287,26 @@ export const api = {
     return handleResponse(res);
   },
 
-  seedDemoProject: async (): Promise<DemoSeedResponse> => {
-    const res = await fetch(`${API_BASE}/api/demo/seed`, {
+  seedDemoProject: async (reset: boolean = false): Promise<DemoSeedResponse> => {
+    const res = await fetch(`${API_BASE}/api/demo/seed?reset=${reset ? "true" : "false"}`, {
       method: "POST",
     });
+    return handleResponse(res);
+  },
+
+  searchSymbol: async (
+    projectId: string,
+    drawingId: string,
+    req: SymbolSearchRequest
+  ): Promise<SymbolSearchResponse> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/search-symbol`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      }
+    );
     return handleResponse(res);
   },
 };

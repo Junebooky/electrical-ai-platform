@@ -1,0 +1,477 @@
+"""Interactive visual symbol template search engine (Issue #29 Workstream B).
+
+Allows users to crop an arbitrary symbol sample from an Image or PDF drawing,
+and search for all matching or similar symbols across the entire drawing
+using OpenCV normalized cross-correlation, multi-rotation matching, and Non-Maximum Suppression (NMS).
+"""
+
+from __future__ import annotations
+
+import io
+import math
+import uuid
+from typing import Any
+
+import cv2
+import numpy as np
+from PIL import Image
+
+from .models import (
+    CandidateStatus,
+    DetectionSource,
+    SymbolCandidate,
+)
+
+try:
+    import pypdfium2 as pdfium
+except ImportError:
+    pdfium = None
+
+
+def rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate an image array by 90, 180, or 270 degrees cleanly without interpolation artifacts."""
+    if angle == 90:
+        return np.ascontiguousarray(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
+    elif angle == 180:
+        return np.ascontiguousarray(cv2.rotate(image, cv2.ROTATE_180))
+    elif angle == 270:
+        return np.ascontiguousarray(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+    return image
+
+
+def non_max_suppression_boxes(
+    boxes: list[list[float]],
+    scores: list[float],
+    overlap_thresh: float = 0.35,
+) -> list[int]:
+    """Pure numpy/Python or OpenCV Non-Maximum Suppression to filter duplicate overlapping boxes."""
+    if not boxes:
+        return []
+    try:
+        boxes_arr = np.array(boxes, dtype=np.float32)
+        scores_arr = np.array(scores, dtype=np.float32)
+        indices = cv2.dnn.NMSBoxes(
+            boxes_arr.tolist(),
+            scores_arr.tolist(),
+            score_threshold=0.0,
+            nms_threshold=overlap_thresh,
+        )
+        out_indices: list[int] = []
+        for item in indices:
+            idx = item[0] if isinstance(item, (list, tuple, np.ndarray)) else int(item)
+            out_indices.append(idx)
+        return out_indices
+    except Exception:
+        # Fallback greedy NMS
+        pick = []
+        x1 = np.array([b[0] for b in boxes])
+        y1 = np.array([b[1] for b in boxes])
+        x2 = np.array([b[2] for b in boxes])
+        y2 = np.array([b[3] for b in boxes])
+        s = np.array(scores)
+        area = (x2 - x1) * (y2 - y1)
+        order = s.argsort()[::-1]
+
+        while order.size > 0:
+            i = order[0]
+            pick.append(int(i))
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            inter = w * h
+            iou = inter / (area[i] + area[order[1:]] - inter + 1e-6)
+            inds = np.where(iou <= overlap_thresh)[0]
+            order = order[inds + 1]
+        return pick
+
+
+def match_template_multi_rotation(
+    target_img: np.ndarray,
+    template_patch: np.ndarray,
+    threshold: float = 0.70,
+    rotations: list[float] | None = None,
+    overlap_thresh: float = 0.35,
+    max_results: int = 150,
+) -> list[dict[str, Any]]:
+    """Perform multi-rotation template matching on target image using OpenCV.
+
+    Supports:
+    - TM_CCOEFF_NORMED for edge/line/text symbols.
+    - TM_SQDIFF_NORMED multi-channel color difference fallback for low-contrast/solid colored symbols.
+    """
+    if rotations is None:
+        rotations = [0.0, 90.0, 180.0, 270.0]
+
+    h_target, w_target = target_img.shape[:2]
+    is_color = len(target_img.shape) == 3 and target_img.shape[2] == 3
+
+    if is_color:
+        gray_target = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+        gray_template = cv2.cvtColor(template_patch, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_target = target_img
+        gray_template = template_patch
+
+    # Check if template has adequate variance (texture/lines) or is solid color
+    tmpl_std = float(gray_template.std())
+    use_color_sqdiff = (tmpl_std < 8.0) and is_color
+
+    candidate_boxes: list[list[float]] = []
+    candidate_scores: list[float] = []
+    candidate_rotations: list[float] = []
+
+    for rot in rotations:
+        if rot == 0.0:
+            rot_tmpl_gray = gray_template
+            rot_tmpl_col = template_patch
+        else:
+            rot_tmpl_gray = rotate_image(gray_template, rot)
+            rot_tmpl_col = rotate_image(template_patch, rot) if is_color else rot_tmpl_gray
+
+        th, tw = rot_tmpl_gray.shape[:2]
+        if th > h_target or tw > w_target or th < 4 or tw < 4:
+            continue
+
+        if use_color_sqdiff:
+            # Color SQDIFF normalized across 3 channels
+            diffs = []
+            for ch in range(3):
+                diff_ch = cv2.matchTemplate(target_img[:, :, ch], rot_tmpl_col[:, :, ch], cv2.TM_SQDIFF_NORMED)
+                diffs.append(diff_ch)
+            res_diff = (diffs[0] + diffs[1] + diffs[2]) / 3.0
+            # Convert to similarity score where 1.0 is exact match
+            res_score = np.maximum(0.0, 1.0 - res_diff)
+            match_y, match_x = np.where(res_score >= threshold)
+        else:
+            res = cv2.matchTemplate(gray_target, rot_tmpl_gray, cv2.TM_CCOEFF_NORMED)
+            # Replace NaNs/Infs that occur in completely blank white regions
+            res = np.nan_to_num(res, nan=-1.0, posinf=1.0, neginf=-1.0)
+            res_score = res
+            match_y, match_x = np.where(res_score >= threshold)
+
+        for y, x in zip(match_y, match_x, strict=False):
+            score = float(res_score[y, x])
+            candidate_boxes.append([float(x), float(y), float(x + tw), float(y + th)])
+            candidate_scores.append(score)
+            candidate_rotations.append(rot)
+
+    if not candidate_boxes:
+        return []
+
+    # Non-Maximum Suppression to remove overlapping duplicate hits
+    keep_indices = non_max_suppression_boxes(
+        candidate_boxes,
+        candidate_scores,
+        overlap_thresh=overlap_thresh,
+    )
+
+    results: list[dict[str, Any]] = []
+    for idx in keep_indices:
+        b = candidate_boxes[idx]
+        score = candidate_scores[idx]
+        rot = candidate_rotations[idx]
+        cx = (b[0] + b[2]) / 2.0
+        cy = (b[1] + b[3]) / 2.0
+        results.append({
+            "bbox": b,
+            "center": [cx, cy],
+            "score": score,
+            "rotation": rot,
+        })
+
+    # Sort descending by similarity score and truncate to max_results
+    results.sort(key=lambda r: float(r["score"]), reverse=True)
+    return results[:max_results]
+
+
+def search_visual_symbols_image(
+    image_bytes: bytes,
+    drawing_id: str,
+    sample_bbox: list[float],
+    suggested_item_code: str = "LIGHT",
+    suggested_item_name: str = "조명기구",
+    threshold: float = 0.70,
+    rotations: list[float] | None = None,
+    max_results: int = 150,
+) -> list[SymbolCandidate]:
+    """Search for symbol candidates on a raster image drawing."""
+    arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if arr is None:
+        # Fallback Pillow
+        im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        arr = cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
+
+    h_img, w_img = arr.shape[:2]
+    x1, y1, x2, y2 = sample_bbox
+    x_min = max(0, min(w_img - 1, math.floor(min(x1, x2))))
+    y_min = max(0, min(h_img - 1, math.floor(min(y1, y2))))
+    x_max = max(0, min(w_img, math.ceil(max(x1, x2))))
+    y_max = max(0, min(h_img, math.ceil(max(y1, y2))))
+
+    bw = x_max - x_min
+    bh = y_max - y_min
+    if bw < 4 or bh < 4:
+        raise ValueError(f"선택한 기호 샘플 영역이 너무 작습니다 (폭: {bw}px, 높이: {bh}px, 최소 4px 필요)")
+
+    template = arr[y_min:y_max, x_min:x_max]
+
+    matches = match_template_multi_rotation(
+        target_img=arr,
+        template_patch=template,
+        threshold=threshold,
+        rotations=rotations,
+        max_results=max_results,
+    )
+
+    candidates: list[SymbolCandidate] = []
+    for idx, m in enumerate(matches):
+        b = m["bbox"]
+        cx, cy = m["center"]
+        score = float(m["score"])
+        rot = float(m["rotation"])
+        cand = SymbolCandidate(
+            candidate_id=f"cand_vis_{drawing_id}_{idx + 1}_{uuid.uuid4().hex[:4]}",
+            drawing_id=drawing_id,
+            page_index=0,
+            coordinate_space="IMAGE_PIXEL",
+            x=round(cx, 1),
+            y=round(cy, 1),
+            bbox=[round(b[0], 1), round(b[1], 1), round(b[2], 1), round(b[3], 1)],
+            suggested_item_code=suggested_item_code,
+            suggested_item_name=suggested_item_name,
+            confidence=round(score, 3),
+            detection_source=DetectionSource.VISUAL_TEMPLATE.value,
+            status=CandidateStatus.PROPOSED,
+            raw_evidence={
+                "method": "VISUAL_TEMPLATE",
+                "similarity_score": round(score, 3),
+                "rotation_deg": rot,
+                "template_bbox": [x_min, y_min, x_max, y_max],
+            },
+        )
+        candidates.append(cand)
+
+    return candidates
+
+
+def search_visual_symbols_pdf(
+    pdf_bytes: bytes,
+    drawing_id: str,
+    sample_bbox: list[float],
+    page_index: int = 0,
+    search_all_pages: bool = False,
+    page_count: int = 1,
+    suggested_item_code: str = "LIGHT",
+    suggested_item_name: str = "조명기구",
+    threshold: float = 0.70,
+    rotations: list[float] | None = None,
+    max_results: int = 150,
+) -> list[SymbolCandidate]:
+    """Search for symbol candidates on a vector/raster PDF drawing using high-resolution rendering."""
+    if pdfium is None:
+        raise RuntimeError("PDF 렌더링 라이브러리(pypdfium2)가 설치되어 있지 않습니다.")
+
+    doc = pdfium.PdfDocument(pdf_bytes)
+    total_pages = len(doc)
+    pages_to_search = list(range(total_pages)) if search_all_pages else [min(page_index, total_pages - 1)]
+
+    render_scale = 2.0  # 144 DPI equivalent for crisp vector lines
+    src_page = doc[page_index]
+    _src_pt_w, _src_pt_h = src_page.get_size()
+
+    # Sample bbox in points
+    x1, y1, x2, y2 = sample_bbox
+    pt_xmin = min(x1, x2)
+    pt_ymin = min(y1, y2)
+    pt_xmax = max(x1, x2)
+    pt_ymax = max(y1, y2)
+
+    # Render source page to extract template
+    src_pil = src_page.render(scale=render_scale).to_pil()
+    src_arr = cv2.cvtColor(np.array(src_pil), cv2.COLOR_RGB2BGR)
+    sh_px, sw_px = src_arr.shape[:2]
+
+    px_xmin = max(0, min(sw_px - 1, math.floor(pt_xmin * render_scale)))
+    px_ymin = max(0, min(sh_px - 1, math.floor(pt_ymin * render_scale)))
+    px_xmax = max(0, min(sw_px, math.ceil(pt_xmax * render_scale)))
+    px_ymax = max(0, min(sh_px, math.ceil(pt_ymax * render_scale)))
+
+    bw = px_xmax - px_xmin
+    bh = px_ymax - px_ymin
+    if bw < 4 or bh < 4:
+        raise ValueError(f"선택한 PDF 기호 샘플 영역이 너무 작습니다 (폭: {bw}px, 높이: {bh}px, 최소 4px 필요)")
+
+    template = src_arr[px_ymin:px_ymax, px_xmin:px_xmax]
+
+    candidates: list[SymbolCandidate] = []
+
+    for p_idx in pages_to_search:
+        page = doc[p_idx]
+        _pt_w, _pt_h = page.get_size()
+        pil_img = page.render(scale=render_scale).to_pil()
+        arr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+        matches = match_template_multi_rotation(
+            target_img=arr,
+            template_patch=template,
+            threshold=threshold,
+            rotations=rotations,
+            max_results=max_results,
+        )
+
+        for m in matches:
+            b_px = m["bbox"]
+            cx_px, cy_px = m["center"]
+            score = float(m["score"])
+            rot = float(m["rotation"])
+
+            # Map pixel bbox back to canonical PDF points
+            cand_bbox = [
+                round(b_px[0] / render_scale, 2),
+                round(b_px[1] / render_scale, 2),
+                round(b_px[2] / render_scale, 2),
+                round(b_px[3] / render_scale, 2),
+            ]
+            cx_pt = round(cx_px / render_scale, 2)
+            cy_pt = round(cy_px / render_scale, 2)
+
+            cand = SymbolCandidate(
+                candidate_id=f"cand_vis_p{p_idx}_{drawing_id}_{len(candidates) + 1}_{uuid.uuid4().hex[:4]}",
+                drawing_id=drawing_id,
+                page_index=p_idx,
+                coordinate_space="PDF_PAGE_POINT",
+                x=cx_pt,
+                y=cy_pt,
+                bbox=cand_bbox,
+                suggested_item_code=suggested_item_code,
+                suggested_item_name=suggested_item_name,
+                confidence=round(score, 3),
+                detection_source=DetectionSource.VISUAL_TEMPLATE.value,
+                status=CandidateStatus.PROPOSED,
+                raw_evidence={
+                    "method": "VISUAL_TEMPLATE",
+                    "similarity_score": round(score, 3),
+                    "rotation_deg": rot,
+                    "template_bbox": [round(pt_xmin, 2), round(pt_ymin, 2), round(pt_xmax, 2), round(pt_ymax, 2)],
+                    "page_index": p_idx,
+                },
+            )
+            candidates.append(cand)
+
+    return candidates
+
+
+def search_visual_symbols_dxf(
+    drawing: Any,
+    drawing_id: str,
+    sample_bbox: list[float],
+    suggested_item_code: str = "LIGHT",
+    suggested_item_name: str = "조명기구",
+    max_results: int = 150,
+) -> list[SymbolCandidate]:
+    """Search for symbol candidates on a DXF drawing by geometric block structure matching."""
+    x1, y1, x2, y2 = sample_bbox
+    xmin, xmax = min(x1, x2), max(x1, x2)
+    ymin, ymax = min(y1, y2), max(y1, y2)
+
+    objects = getattr(drawing, "objects", []) or []
+    insert_objs = [o for o in objects if getattr(o, "entity_type", "") == "INSERT"]
+
+    # 1. Find overlapping blocks in the sample bbox
+    matched_block_names: set[str] = set()
+    for o in insert_objs:
+        pt = getattr(o, "insert_point", None)
+        if pt:
+            ox, oy = float(pt[0]), float(pt[1])
+            if xmin <= ox <= xmax and ymin <= oy <= ymax:
+                bname = getattr(o, "block_name", "")
+                if bname:
+                    matched_block_names.add(bname)
+
+    candidates: list[SymbolCandidate] = []
+    if matched_block_names:
+        for idx, o in enumerate(insert_objs):
+            bname = getattr(o, "block_name", "")
+            if bname in matched_block_names:
+                pt = getattr(o, "insert_point", None)
+                ox = float(pt[0]) if pt else 0.0
+                oy = float(pt[1]) if pt else 0.0
+                cand = SymbolCandidate(
+                    candidate_id=f"cand_vis_dxf_{drawing_id}_{idx + 1}_{uuid.uuid4().hex[:4]}",
+                    drawing_id=drawing_id,
+                    page_index=0,
+                    coordinate_space="WORLD",
+                    x=round(ox, 2),
+                    y=round(oy, 2),
+                    bbox=[round(ox - 15.0, 2), round(oy - 15.0, 2), round(ox + 15.0, 2), round(oy + 15.0, 2)],
+                    suggested_item_code=suggested_item_code,
+                    suggested_item_name=suggested_item_name,
+                    confidence=0.95,
+                    detection_source=DetectionSource.VISUAL_TEMPLATE.value,
+                    status=CandidateStatus.PROPOSED,
+                    raw_evidence={
+                        "method": "DXF_BLOCK_GEOMETRY",
+                        "block_name": bname,
+                        "sample_bbox": [round(xmin, 2), round(ymin, 2), round(xmax, 2), round(ymax, 2)],
+                    },
+                )
+                candidates.append(cand)
+    return candidates[:max_results]
+
+
+def search_visual_symbols(
+    drawing: Any,
+    raw_bytes: bytes,
+    drawing_id: str,
+    source_type: str,
+    sample_bbox: list[float],
+    page_index: int = 0,
+    search_all_pages: bool = False,
+    page_count: int = 1,
+    suggested_item_code: str = "LIGHT",
+    suggested_item_name: str = "조명기구",
+    threshold: float = 0.70,
+    rotations: list[float] | None = None,
+    max_results: int = 150,
+) -> list[SymbolCandidate]:
+    """Unified visual symbol template matching dispatcher across IMAGE, PDF, and DXF."""
+    norm_source = (source_type or "").upper()
+    if norm_source == "IMAGE":
+        return search_visual_symbols_image(
+            image_bytes=raw_bytes,
+            drawing_id=drawing_id,
+            sample_bbox=sample_bbox,
+            suggested_item_code=suggested_item_code,
+            suggested_item_name=suggested_item_name,
+            threshold=threshold,
+            rotations=rotations,
+            max_results=max_results,
+        )
+    elif norm_source == "PDF":
+        return search_visual_symbols_pdf(
+            pdf_bytes=raw_bytes,
+            drawing_id=drawing_id,
+            sample_bbox=sample_bbox,
+            page_index=page_index,
+            search_all_pages=search_all_pages,
+            page_count=page_count,
+            suggested_item_code=suggested_item_code,
+            suggested_item_name=suggested_item_name,
+            threshold=threshold,
+            rotations=rotations,
+            max_results=max_results,
+        )
+    elif norm_source == "DXF":
+        return search_visual_symbols_dxf(
+            drawing=drawing,
+            drawing_id=drawing_id,
+            sample_bbox=sample_bbox,
+            suggested_item_code=suggested_item_code,
+            suggested_item_name=suggested_item_name,
+            max_results=max_results,
+        )
+    else:
+        return []

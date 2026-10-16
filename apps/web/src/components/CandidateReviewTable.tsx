@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   SymbolCandidate,
   CandidateStatus,
   CandidateBulkReviewRequest,
+  DetectionSource,
 } from "@/types/cad";
 import {
   Sparkles,
@@ -15,6 +16,8 @@ import {
   XCircle,
   Clock,
   Filter,
+  Crop,
+  Layers,
 } from "lucide-react";
 
 interface CandidateReviewTableProps {
@@ -26,6 +29,8 @@ interface CandidateReviewTableProps {
   onReview: (req: CandidateBulkReviewRequest) => Promise<void>;
   onSelectCandidate: (candidate: SymbolCandidate | null) => void;
   isSaving: boolean;
+  isCropSearchMode?: boolean;
+  onToggleCropSearch?: () => void;
 }
 
 export function CandidateReviewTable({
@@ -37,8 +42,11 @@ export function CandidateReviewTable({
   onReview,
   onSelectCandidate,
   isSaving,
+  isCropSearchMode = false,
+  onToggleCropSearch,
 }: CandidateReviewTableProps) {
   const [statusFilter, setStatusFilter] = useState<CandidateStatus | "ALL">("ALL");
+  const [sourceFilter, setSourceFilter] = useState<DetectionSource | "ALL">("ALL");
   const [itemFilter, setItemFilter] = useState<string>("ALL");
 
   const totalCount = candidates.length;
@@ -48,6 +56,7 @@ export function CandidateReviewTable({
 
   const filteredCandidates = candidates.filter((c) => {
     if (statusFilter !== "ALL" && c.status !== statusFilter) return false;
+    if (sourceFilter !== "ALL" && c.detection_source !== sourceFilter) return false;
     if (itemFilter !== "ALL" && (c.reviewed_item_code || c.suggested_item_code) !== itemFilter) {
       return false;
     }
@@ -57,6 +66,75 @@ export function CandidateReviewTable({
   const uniqueItemCodes = Array.from(
     new Set(candidates.map((c) => c.reviewed_item_code || c.suggested_item_code))
   );
+
+  // Workstream C: Keyboard shortcuts for professional review productivity ([A] Accept, [R] Reject, [↑/↓] Navigate)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLSelectElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+
+      if (e.key === "a" || e.key === "A") {
+        const target = selectedCandidateId
+          ? candidates.find((c) => c.candidate_id === selectedCandidateId)
+          : filteredCandidates.find((c) => c.status === "PROPOSED");
+        if (target && !isSaving) {
+          e.preventDefault();
+          onReview({
+            updates: [
+              {
+                candidate_id: target.candidate_id,
+                status: "ACCEPTED",
+                reviewed_item_code: target.reviewed_item_code || target.suggested_item_code,
+                review_note: "단축키 [A] 승인",
+              },
+            ],
+          });
+        }
+      } else if (e.key === "r" || e.key === "R") {
+        const target = selectedCandidateId
+          ? candidates.find((c) => c.candidate_id === selectedCandidateId)
+          : filteredCandidates.find((c) => c.status === "PROPOSED");
+        if (target && !isSaving) {
+          e.preventDefault();
+          onReview({
+            updates: [
+              {
+                candidate_id: target.candidate_id,
+                status: "REJECTED",
+                review_note: "단축키 [R] 제외",
+              },
+            ],
+          });
+        }
+      } else if (e.key === "ArrowDown" || e.key === "j" || e.key === "J") {
+        e.preventDefault();
+        const currentIndex = filteredCandidates.findIndex(
+          (c) => c.candidate_id === selectedCandidateId
+        );
+        if (currentIndex < filteredCandidates.length - 1) {
+          onSelectCandidate(filteredCandidates[currentIndex + 1]);
+        } else if (filteredCandidates.length > 0 && currentIndex === -1) {
+          onSelectCandidate(filteredCandidates[0]);
+        }
+      } else if (e.key === "ArrowUp" || e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        const currentIndex = filteredCandidates.findIndex(
+          (c) => c.candidate_id === selectedCandidateId
+        );
+        if (currentIndex > 0) {
+          onSelectCandidate(filteredCandidates[currentIndex - 1]);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedCandidateId, candidates, filteredCandidates, isSaving, onReview, onSelectCandidate]);
 
   return (
     <div className="flex flex-col h-full bg-slate-900 text-slate-200 select-none">
@@ -75,14 +153,33 @@ export function CandidateReviewTable({
             </div>
           </div>
 
-          <button
-            onClick={() => onDetect()}
-            disabled={isDetecting || isSaving}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-sky-600/20 transition"
-          >
-            <Sparkles size={14} className={isDetecting ? "animate-spin" : ""} />
-            {isDetecting ? "기호 탐지 중..." : "AI 탐지 실행"}
-          </button>
+          <div className="flex items-center gap-2">
+            {onToggleCropSearch && (
+              <button
+                onClick={onToggleCropSearch}
+                data-testid="btn-crop-search-toggle"
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition border ${
+                  isCropSearchMode
+                    ? "bg-sky-500 text-white border-sky-400 shadow-lg shadow-sky-500/30 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700"
+                }`}
+                title="도면에서 기호 영역을 마우스로 드래그하여 유사 기호를 검색합니다"
+              >
+                <Crop size={13} />
+                <span>{isCropSearchMode ? "영역 지정 중..." : "기호 영역 검색"}</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => onDetect()}
+              disabled={isDetecting || isSaving}
+              data-testid="btn-ai-detect"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-sky-600/20 transition"
+            >
+              <Sparkles size={14} className={isDetecting ? "animate-spin" : ""} />
+              {isDetecting ? "기호 탐지 중..." : "AI 탐지 실행"}
+            </button>
+          </div>
         </div>
 
         {/* Metrics Bar */}
@@ -111,6 +208,7 @@ export function CandidateReviewTable({
             <button
               onClick={() => onReview({ action: "ACCEPT_ALL" })}
               disabled={isSaving || proposedCount === 0}
+              data-testid="btn-bulk-accept"
               className="flex-1 py-1.5 px-2 bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-medium flex items-center justify-center gap-1.5 transition shadow"
             >
               <CheckCircle2 size={13} />
@@ -119,6 +217,7 @@ export function CandidateReviewTable({
             <button
               onClick={() => onReview({ action: "REJECT_ALL" })}
               disabled={isSaving || proposedCount === 0}
+              data-testid="btn-bulk-reject"
               className="flex-1 py-1.5 px-2 bg-rose-600/80 hover:bg-rose-500 disabled:opacity-40 text-white rounded text-xs font-medium flex items-center justify-center gap-1.5 transition shadow"
             >
               <XCircle size={13} />
@@ -136,7 +235,7 @@ export function CandidateReviewTable({
         )}
 
         {/* Filter Toolbar */}
-        <div className="flex items-center justify-between text-xs pt-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-1">
           <div className="flex items-center gap-1 bg-slate-900 px-1 py-0.5 rounded border border-slate-800">
             {(["ALL", "PROPOSED", "ACCEPTED", "REJECTED"] as const).map((st) => (
               <button
@@ -153,23 +252,41 @@ export function CandidateReviewTable({
             ))}
           </div>
 
-          {uniqueItemCodes.length > 1 && (
-            <div className="flex items-center gap-1.5 text-slate-400">
-              <Filter size={12} />
+          <div className="flex items-center gap-2">
+            {/* Detection Source Filter */}
+            <div className="flex items-center gap-1 text-slate-400">
+              <Layers size={11} />
               <select
-                value={itemFilter}
-                onChange={(e) => setItemFilter(e.target.value)}
-                className="bg-slate-950 text-slate-200 text-xs px-2 py-0.5 rounded border border-slate-800 focus:outline-none"
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value as DetectionSource | "ALL")}
+                className="bg-slate-950 text-slate-200 text-[11px] px-1.5 py-0.5 rounded border border-slate-800 focus:outline-none"
               >
-                <option value="ALL">모든 품목</option>
-                {uniqueItemCodes.map((code) => (
-                  <option key={code} value={code}>
-                    {code}
-                  </option>
-                ))}
+                <option value="ALL">모든 출처</option>
+                <option value="VISUAL_TEMPLATE">비주얼 템플릿</option>
+                <option value="IMAGE_TEMPLATE">이미지 심볼</option>
+                <option value="PDF_VECTOR_RULE">PDF 텍스트</option>
+                <option value="DXF_BLOCK">DXF 블록</option>
               </select>
             </div>
-          )}
+
+            {uniqueItemCodes.length > 1 && (
+              <div className="flex items-center gap-1 text-slate-400">
+                <Filter size={11} />
+                <select
+                  value={itemFilter}
+                  onChange={(e) => setItemFilter(e.target.value)}
+                  className="bg-slate-950 text-slate-200 text-[11px] px-1.5 py-0.5 rounded border border-slate-800 focus:outline-none"
+                >
+                  <option value="ALL">모든 품목</option>
+                  {uniqueItemCodes.map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -212,14 +329,18 @@ export function CandidateReviewTable({
                   <div className="flex items-center gap-2">
                     <span
                       className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold uppercase border ${
-                        cand.detection_source === "DXF_BLOCK"
+                        cand.detection_source === "VISUAL_TEMPLATE"
+                          ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                          : cand.detection_source === "DXF_BLOCK"
                           ? "bg-blue-500/10 text-blue-300 border-blue-500/30"
                           : cand.detection_source === "PDF_VECTOR_RULE"
                           ? "bg-purple-500/10 text-purple-300 border-purple-500/30"
                           : "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
                       }`}
                     >
-                      {cand.detection_source === "DXF_BLOCK"
+                      {cand.detection_source === "VISUAL_TEMPLATE"
+                        ? "비주얼 템플릿"
+                        : cand.detection_source === "DXF_BLOCK"
                         ? "DXF 블록"
                         : cand.detection_source === "PDF_VECTOR_RULE"
                         ? "PDF 텍스트"
@@ -271,7 +392,7 @@ export function CandidateReviewTable({
                     </span>
                     <span>•</span>
                     <span className="text-sky-300">
-                      신뢰도 {Math.round(cand.confidence * 100)}%
+                      유사도 {Math.round(cand.confidence * 100)}%
                     </span>
                   </div>
 
@@ -359,6 +480,27 @@ export function CandidateReviewTable({
                     <X size={12} />
                     <span>거부</span>
                   </button>
+
+                  {(isAccepted || isRejected) && (
+                    <button
+                      onClick={() =>
+                        onReview({
+                          updates: [
+                            {
+                              candidate_id: cand.candidate_id,
+                              status: "PROPOSED",
+                              review_note: "검수 대기 복원",
+                            },
+                          ],
+                        })
+                      }
+                      disabled={isSaving}
+                      title="대기 상태로 복원 (Undo)"
+                      className="py-1 px-2 rounded text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-amber-300 transition flex items-center justify-center"
+                    >
+                      <RotateCcw size={12} />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -366,13 +508,19 @@ export function CandidateReviewTable({
         )}
       </div>
 
-      {/* Footer domain notice (P1 copy & domain safety) */}
-      <div className="p-2.5 border-t border-slate-800 bg-slate-950/80 text-[11px] text-slate-400 flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-amber-400">
-          <Clock size={12} />
-          <span>규칙 기반 후보 · 검수 전 0 EA 보장</span>
-        </span>
-        <span className="text-[10px] text-slate-400">승인 항목만 물량 반영</span>
+      {/* Footer domain notice & shortcuts */}
+      <div className="p-2.5 border-t border-slate-800 bg-slate-950/80 text-[11px] text-slate-400 flex flex-col gap-1">
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-amber-400">
+            <Clock size={12} />
+            <span>규칙 기반 후보 · 검수 전 0 EA 보장</span>
+          </span>
+          <span className="text-[10px] text-slate-400">승인 항목만 물량 반영</span>
+        </div>
+        <div className="flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-800/60 pt-1 font-mono">
+          <span>단축키: [A] 선택 승인 · [R] 선택 거부 · [↑/↓] 이동</span>
+          <span>복원 아이콘으로 Undo 지원</span>
+        </div>
       </div>
     </div>
   );

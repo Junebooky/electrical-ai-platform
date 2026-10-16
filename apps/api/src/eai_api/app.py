@@ -38,6 +38,8 @@ from .models import (
     ProjectCreate,
     ProjectMetadata,
     SymbolCandidate,
+    SymbolSearchRequest,
+    SymbolSearchResponse,
     TakeoffResult,
 )
 from .pdf_parser import (
@@ -48,6 +50,7 @@ from .pdf_parser import (
     parse_pdf_document,
 )
 from .storage import Storage
+from .visual_search import search_visual_symbols
 
 app = FastAPI(
     title="Electrical AI Platform API",
@@ -540,10 +543,11 @@ def get_fixture_path(subpath: str) -> Path:
 
 
 @app.post("/api/demo/seed", response_model=DemoSeedResponse)
-def seed_demo_project() -> DemoSeedResponse:
+def seed_demo_project(reset: bool = Query(False, description="기존 데모 데이터 초기화 여부")) -> DemoSeedResponse:
     """Seed a comprehensive live demo project with DXF, PDF, and Image drawings.
 
-    Includes applied standard templates and candidate detection for instant end-to-end walkthrough.
+    Idempotent (A01 P1-DEMO-RESEED fix): if the demo project already exists and reset=False,
+    existing drawings, candidates, and user review statuses (ACCEPTED/REJECTED) are completely preserved.
     """
     demo_name = "EAI 실전 전기 적산 데모 (Issue #23)"
     existing_projects = storage.list_projects()
@@ -554,13 +558,42 @@ def seed_demo_project() -> DemoSeedResponse:
             description="DXF, PDF, Image 3개 포맷 기호 탐지·매핑·일괄검수·물량산출 통합 시연 프로젝트",
         )
         proj = storage.create_project(proj_payload)
+    else:
+        existing_drawings = storage.list_drawings(proj.id)
+        if not reset and len(existing_drawings) == 3:
+            # Idempotent return: preserve user reviews and existing drawing states
+            seeded_drawings: list[DemoDrawingItem] = []
+            for d in existing_drawings:
+                dwg = storage.get_drawing(proj.id, d.id)
+                cands = storage.get_candidates(proj.id, d.id)
+                meta = storage.get_drawing_meta(proj.id, d.id) or {}
+                seeded_drawings.append(
+                    DemoDrawingItem(
+                        drawing_id=d.id,
+                        filename=d.filename,
+                        source_type=meta.get("source_type", "DXF"),
+                        objects_count=len(dwg.objects) if dwg else 0,
+                        candidates_count=len(cands),
+                        status="ready",
+                    )
+                )
+            return DemoSeedResponse(
+                status="seeded",
+                project_id=proj.id,
+                project_name=proj.name,
+                drawings=seeded_drawings,
+                applied_template="tpl_standard_elec",
+                note="기존 실전 데모 프로젝트 도면 및 검수 데이터 유지 (Idempotent No-op)",
+            )
 
-    seeded_drawings: list[DemoDrawingItem] = []
+    seeded_drawings = []
 
-    # 1. DXF Fixture
+    # 1. DXF Fixture with deterministic stable ID
     dxf_fixture = get_fixture_path("fixtures/dxf/basic_devices.dxf")
     raw_bytes = dxf_fixture.read_bytes()
     norm_dwg = parse_dxf(raw_bytes, filename=dxf_fixture.name)
+    dxf_dwg_id = f"dwg_demo_dxf_{proj.id[-6:]}"
+    norm_dwg.drawing_id = dxf_dwg_id
     storage.save_drawing(
         proj.id,
         norm_dwg,
@@ -569,18 +602,18 @@ def seed_demo_project() -> DemoSeedResponse:
         file_type="DXF",
         coordinate_space="WORLD",
     )
-    storage.apply_mapping_template(proj.id, norm_dwg.drawing_id, "tpl_standard_elec")
+    storage.apply_mapping_template(proj.id, dxf_dwg_id, "tpl_standard_elec")
     cands = detect_candidates(
         norm_dwg,
         raw_bytes,
-        norm_dwg.drawing_id,
+        dxf_dwg_id,
         source_type="DXF",
-        mapping_rules=storage.get_mappings(proj.id, norm_dwg.drawing_id),
+        mapping_rules=storage.get_mappings(proj.id, dxf_dwg_id),
     )
-    storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
+    storage.save_candidates(proj.id, dxf_dwg_id, cands)
     seeded_drawings.append(
         DemoDrawingItem(
-            drawing_id=norm_dwg.drawing_id,
+            drawing_id=dxf_dwg_id,
             filename=dxf_fixture.name,
             source_type="DXF",
             objects_count=len(norm_dwg.objects),
@@ -589,12 +622,12 @@ def seed_demo_project() -> DemoSeedResponse:
         )
     )
 
-    # 2. Vector PDF Fixture
+    # 2. Vector PDF Fixture with deterministic stable ID
     pdf_fixture = get_fixture_path("fixtures/pdf/pdf_c_vector_features.pdf")
     raw_bytes = pdf_fixture.read_bytes()
     doc_info = parse_pdf_document(raw_bytes)
-    drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
-    norm_dwg = build_pdf_drawing(doc_info, drawing_id, filename=pdf_fixture.name)
+    pdf_dwg_id = f"dwg_demo_pdf_{proj.id[-6:]}"
+    norm_dwg = build_pdf_drawing(doc_info, pdf_dwg_id, filename=pdf_fixture.name)
     first_p = doc_info.pages[0] if doc_info.pages else None
     pw = int(first_p.display_width_pt) if first_p else 595
     ph = int(first_p.display_height_pt) if first_p else 842
@@ -612,14 +645,14 @@ def seed_demo_project() -> DemoSeedResponse:
     cands = detect_candidates(
         norm_dwg,
         raw_bytes,
-        norm_dwg.drawing_id,
+        pdf_dwg_id,
         source_type="PDF",
         page_count=doc_info.page_count,
     )
-    storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
+    storage.save_candidates(proj.id, pdf_dwg_id, cands)
     seeded_drawings.append(
         DemoDrawingItem(
-            drawing_id=norm_dwg.drawing_id,
+            drawing_id=pdf_dwg_id,
             filename=pdf_fixture.name,
             source_type="PDF",
             objects_count=len(norm_dwg.objects),
@@ -628,12 +661,12 @@ def seed_demo_project() -> DemoSeedResponse:
         )
     )
 
-    # 3. Raster Image Fixture
+    # 3. Raster Image Fixture with deterministic stable ID
     img_fixture = get_fixture_path("fixtures/images/floorplan_sample.png")
     raw_bytes = img_fixture.read_bytes()
     img_info = inspect_image(raw_bytes, filename=img_fixture.name)
-    drawing_id = f"dwg_{uuid.uuid4().hex[:8]}"
-    norm_dwg = build_image_drawing(img_info, drawing_id)
+    img_dwg_id = f"dwg_demo_img_{proj.id[-6:]}"
+    norm_dwg = build_image_drawing(img_info, img_dwg_id)
     storage.save_drawing(
         proj.id,
         norm_dwg,
@@ -646,13 +679,13 @@ def seed_demo_project() -> DemoSeedResponse:
     cands = detect_candidates(
         norm_dwg,
         raw_bytes,
-        norm_dwg.drawing_id,
+        img_dwg_id,
         source_type="IMAGE",
     )
-    storage.save_candidates(proj.id, norm_dwg.drawing_id, cands)
+    storage.save_candidates(proj.id, img_dwg_id, cands)
     seeded_drawings.append(
         DemoDrawingItem(
-            drawing_id=norm_dwg.drawing_id,
+            drawing_id=img_dwg_id,
             filename=img_fixture.name,
             source_type="IMAGE",
             objects_count=len(norm_dwg.objects),
@@ -668,6 +701,60 @@ def seed_demo_project() -> DemoSeedResponse:
         drawings=seeded_drawings,
         applied_template="tpl_standard_elec",
         note="DXF·PDF·이미지 3개 포맷 데모 도면 및 표준 템플릿·기호 탐지 사전 적용 완료",
+    )
+
+
+@app.post(
+    "/api/projects/{project_id}/drawings/{drawing_id}/search-symbol",
+    response_model=SymbolSearchResponse,
+)
+def search_symbol(
+    project_id: str,
+    drawing_id: str,
+    req: SymbolSearchRequest,
+) -> SymbolSearchResponse:
+    """Perform visual symbol template matching across an Image, PDF, or DXF drawing (Workstream B)."""
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+
+    raw_path = storage.get_raw_drawing_path(project_id, drawing_id)
+    raw_bytes = raw_path.read_bytes() if raw_path and raw_path.exists() else b""
+
+    meta = storage.get_drawing_meta(project_id, drawing_id) or {}
+    source_type = meta.get("source_type", "DXF")
+    page_count = meta.get("page_count", 1)
+
+    try:
+        new_candidates = search_visual_symbols(
+            drawing=drawing,
+            raw_bytes=raw_bytes,
+            drawing_id=drawing_id,
+            source_type=source_type,
+            sample_bbox=req.sample_bbox,
+            page_index=req.page_index,
+            search_all_pages=req.search_all_pages,
+            page_count=page_count,
+            suggested_item_code=req.suggested_item_code,
+            suggested_item_name=req.suggested_item_name,
+            threshold=req.threshold,
+            max_results=req.max_results,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"기호 시각적 검색 중 오류 발생: {e}") from e
+
+    # Persist newly found visual candidates, merging with existing candidates
+    existing = storage.get_candidates(project_id, drawing_id)
+    storage.save_candidates(project_id, drawing_id, existing + new_candidates)
+
+    return SymbolSearchResponse(
+        drawing_id=drawing_id,
+        page_index=req.page_index,
+        total_found=len(new_candidates),
+        candidates=new_candidates,
+        message=f"{len(new_candidates)}개의 유사 기호 후보를 탐지하여 등록했습니다.",
     )
 
 

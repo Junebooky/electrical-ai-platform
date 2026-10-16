@@ -92,6 +92,7 @@ export function TakeoffTable({
           <a
             href={xlsxUrl}
             download
+            data-testid="btn-export-xlsx"
             className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs font-medium shadow transition"
             title="Excel 통합 파일 다운로드 (Summary + Evidence 2개 시트)"
           >
@@ -101,6 +102,7 @@ export function TakeoffTable({
           <a
             href={csvSummaryUrl}
             download
+            data-testid="btn-export-csv-summary"
             className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded text-xs font-medium transition"
             title="CSV 요약본 다운로드"
           >
@@ -110,6 +112,7 @@ export function TakeoffTable({
           <a
             href={csvEvidenceUrl}
             download
+            data-testid="btn-export-csv-evidence"
             className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded text-xs font-medium transition"
             title="CSV 근거 상세 다운로드"
           >

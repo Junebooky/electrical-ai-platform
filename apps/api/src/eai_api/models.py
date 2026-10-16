@@ -20,6 +20,7 @@ class DetectionSource(StrEnum):
     DXF_BLOCK = "DXF_BLOCK"
     PDF_VECTOR_RULE = "PDF_VECTOR_RULE"
     IMAGE_TEMPLATE = "IMAGE_TEMPLATE"
+    VISUAL_TEMPLATE = "VISUAL_TEMPLATE"
 
 
 class InclusionStatus(StrEnum):
@@ -283,5 +284,25 @@ class DemoSeedResponse(BaseModel):
     drawings: list[DemoDrawingItem]
     applied_template: str = ""
     note: str = ""
+
+
+class SymbolSearchRequest(BaseModel):
+    """Request payload for visual symbol template matching (Issue #29 Workstream B)."""
+    sample_bbox: list[float]  # [x1, y1, x2, y2]
+    page_index: int = 0
+    suggested_item_code: str = "LIGHT"
+    suggested_item_name: str = "조명기구"
+    threshold: float = 0.70
+    search_all_pages: bool = False
+    max_results: int = 150
+
+
+class SymbolSearchResponse(BaseModel):
+    """Response returned when searching for visual symbols across drawing."""
+    drawing_id: str
+    page_index: int
+    total_found: int
+    candidates: list[SymbolCandidate]
+    message: str = ""
 
 
