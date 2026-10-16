@@ -173,18 +173,37 @@ def test_scope_conflict_warning_when_multiple_active() -> None:
 
     scopes = client.get(f"/api/projects/{proj_id}/scopes").json()
     f1_r1 = next(s for s in scopes if s["revision"] == "REV1" and s["sheet_key"] == "1F_LIGHT")
+    f1_ref = next(s for s in scopes if s["sheet_role"] == SheetRole.REFERENCE)
 
-    # Forcefully update REV1 to active without deactivating REV0 (manual update)
-    client.put(
+    # Workstream 0 Guardrail 2: Activating a REFERENCE drawing via PUT /scope is rejected with 400
+    ref_put_res = client.put(
+        f"/api/projects/{proj_id}/drawings/{f1_ref['drawing_id']}/scope",
+        json={"active_for_takeoff": True},
+    )
+    assert ref_put_res.status_code == 400
+
+    # Workstream 0 Guardrail 1: Activating REV1 while REV0 is active is rejected with 409 Conflict
+    put_res = client.put(
         f"/api/projects/{proj_id}/drawings/{f1_r1['drawing_id']}/scope",
         json={"active_for_takeoff": True},
     )
+    assert put_res.status_code == 409
+
+    # To test read/export fail-closed if corrupted/legacy data has two active REVs:
+    from eai_api.app import storage
+    s_r1 = storage.get_drawing_scope(proj_id, f1_r1["drawing_id"])
+    s_r1.active_for_takeoff = True
+    storage.save_drawing_scope(proj_id, f1_r1["drawing_id"], s_r1)
 
     takeoff_res = client.get(f"/api/projects/{proj_id}/takeoff")
     assert takeoff_res.status_code == 200
     data = takeoff_res.json()
     assert len(data["scope_warnings"]) >= 1
     assert "1F_LIGHT" in data["scope_warnings"][0]
+
+    # Fail-closed verification: 1F_LIGHT (6+10) is withheld from summary so it is NEVER double-counted!
+    summary = {row["item_code"]: row for row in data["summary"]}
+    assert summary.get("LIGHT", {}).get("total_quantity", 0) == 8  # Only 2F (8) is counted, 1F is withheld!
 
 
 def test_comprehensive_4_sheet_project_xlsx_export() -> None:

@@ -131,15 +131,27 @@ $ (cd apps/web && npm run test:playwright)
 
 ---
 
-## 7. 2차 출시 후보 (Issue #35 다중 도면·리비전 통합 RC) 및 PO 승인 요청 사항
+## 7. 3차 출시 후보 (Issue #37 축척 보정·2D 경로 측정 RC) 및 PO 승인 요청 사항
 
 - [x] Multi-format (DXF, Image, PDF) 단일 통합 파이프라인 완성
 - [x] 사용자 지정 기호 드래그 검색 및 단축키 검수 워크플로우 완성
 - [x] 범례 매핑 템플릿 시스템 및 2시트/4시트 엑셀 내보내기 완성
-- [x] 원클릭 로컬 구동 스크립트 및 2종 실전 데모 시드 완성
-- [x] **[Issue #35] 다중 도면 스코프 등록부 (`sheet_key`, `floor`, `zone`, `sheet_role`, `active_for_takeoff`) 완성**
-- [x] **[Issue #35] 층/구역 단위 충돌 방지 및 단일 sheet_key 당 1개 활성 REV 배타성 완성**
-- [x] **[Issue #35] 프로젝트 통합 적산 API (`GET /api/projects/{id}/takeoff`) 및 단위 분리 안전성 완성**
-- [x] **[Issue #35] 설계변경 실용적 차이 분석 (`GET /api/projects/{id}/revisions/compare`) 및 4시트 엑셀 완성**
-- [x] **[Issue #35] 합성 DXF 픽스처 4종 및 14 $\rightarrow$ 18 (+4 EA) 정답 검증 완료 (pytest 111건 + E2E Playwright 통과)**
-- [ ] **PO 명시 승인 요청:** main 브랜치 통합 및 제한적 사내 사용자 베타 배포 진행 승인
+- [x] 원클릭 로컬 구동 스크립트 및 실전 데모 시드 완성
+- [x] **[Workstream 0] PR #36 수량 안전가드 2건 사전 반영:**
+  - `sheet_role: REFERENCE/LEGEND`의 `active_for_takeoff=True` 진입 시 `400 Bad Request` 거절.
+  - 동일 `sheet_key`에 복수 활성 REV 지정 시 `409 Conflict` 방어 및 프로젝트 적산 fail-closed 방어.
+- [x] **[Workstream A] 2점 축척 기준 보정 (`CalibrationData`):**
+  - 도면별 2점 클릭 측정거리(px) $\rightarrow$ 실거리(m) 축척 계수 산출, 영속 CRUD 및 DXF `$INSUNITS` 자동 연동.
+- [x] **[Workstream B] 2D 폴리라인 수동 경로 측정 (`ManualMeasuredRoute`):**
+  - SVG 캔버스 배선/전선관 폴리라인 인터랙티브 측정 (실시간 가이드선, 길이 누적 배지, Enter 완료, Backspace 취소).
+  - 축척 보정 변경 시 기존 경로 2D 연장(m) 실시간 자동 재계산.
+- [x] **[Workstream C] 잠정 m 물량 적산 및 단위 격리 안전가드:**
+  - `TakeoffResult` 및 `ProjectTakeoffResult`에 `POLYLINE_ROUTE` 근거행 및 `m` 단위 분리 집계.
+  - `total_equipment_ea` (기구 EA)와 `total_route_length_m` (경로 m) 엄격 분리 (절대 단순 합산 금지).
+  - 단일/프로젝트 엑셀 내보내기 시 `Route Measurements` 시트 추가 및 수식 주입(`=`, `+`, `-`, `@`) 방어 적용.
+- [x] **[Workstream D] 7.00m 오라클 검증 및 자동화 테스트 100% 통과:**
+  - 100px=10m 스케일 바, 30px+40px=70px (정답 7.00m) 합성 이미지 오라클 시드 탑재.
+  - pytest 백엔드 단위/통합 테스트 117건 100% 통과 (`apps/api/tests/test_scale_calibration_and_route_measurement.py`).
+  - Next.js 프론트엔드 TypeScript 및 ESLint 0 warning / 0 error.
+  - Playwright E2E 스모크 테스트 100% 통과 (`apps/web/scripts/e2e_route_measurement_smoke.mjs`).
+- [ ] **PO 명시 승인 요청:** main 브랜치 병합 및 배포 전 사용자 승인 대기 (사용자 승인 전 병합/배포 엄격 금지 준수)

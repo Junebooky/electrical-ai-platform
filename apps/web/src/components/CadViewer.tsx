@@ -7,8 +7,10 @@ import {
   PdfTextFeature,
   PdfPathFeature,
   SymbolCandidate,
+  CalibrationData,
+  ManualMeasuredRoute,
 } from "@/types/cad";
-import { ZoomIn, ZoomOut, Maximize2, PlusCircle, Crop } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, PlusCircle, Crop, Ruler, Route, Check, X, RotateCcw } from "lucide-react";
 
 export interface ManualMarker {
   id: string;
@@ -42,6 +44,20 @@ interface CadViewerProps {
   onSelectCandidate?: (candidate: SymbolCandidate | null) => void;
   isCropSearchMode?: boolean;
   onCropComplete?: (bbox: [number, number, number, number]) => void;
+  // Issue #37: Scale Calibration & Route Measurement
+  isCalibrateMode?: boolean;
+  calibrationData?: CalibrationData | null;
+  onCalibrateComplete?: (pointA: { x: number; y: number }, pointB: { x: number; y: number }, pixelDist: number) => void;
+  onCancelCalibrate?: () => void;
+  isRouteMeasureMode?: boolean;
+  routes?: ManualMeasuredRoute[];
+  activeRoutePoints?: { x: number; y: number }[];
+  onAddRoutePoint?: (point: { x: number; y: number }) => void;
+  onFinishRoute?: () => void;
+  onCancelRoute?: () => void;
+  onUndoRoutePoint?: () => void;
+  selectedRouteId?: string | null;
+  onSelectRoute?: (routeId: string | null) => void;
 }
 
 export function CadViewer({
@@ -66,6 +82,19 @@ export function CadViewer({
   onSelectCandidate,
   isCropSearchMode = false,
   onCropComplete,
+  isCalibrateMode = false,
+  calibrationData = null,
+  onCalibrateComplete,
+  onCancelCalibrate,
+  isRouteMeasureMode = false,
+  routes = [],
+  activeRoutePoints = [],
+  onAddRoutePoint,
+  onFinishRoute,
+  onCancelRoute,
+  onUndoRoutePoint,
+  selectedRouteId = null,
+  onSelectRoute,
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -94,6 +123,47 @@ export function CadViewer({
   const [cropCurrent, setCropCurrent] = useState<{ x: number; y: number } | null>(null);
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
   const cropCurrentRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Issue #37: Scale calibration & route measure states
+  const [rawCalibStartPoint, setRawCalibStartPoint] = useState<{ x: number; y: number } | null>(null);
+  const calibStartPoint = isCalibrateMode ? rawCalibStartPoint : null;
+
+  useEffect(() => {
+    if (!isRouteMeasureMode) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        onFinishRoute?.();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onCancelRoute?.();
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        onUndoRoutePoint?.();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isRouteMeasureMode, onFinishRoute, onCancelRoute, onUndoRoutePoint]);
+
+  const activeRouteLengthPx = useMemo(() => {
+    if (!isRouteMeasureMode || activeRoutePoints.length === 0) return 0;
+    let len = 0;
+    for (let i = 0; i < activeRoutePoints.length - 1; i++) {
+      len += Math.hypot(
+        activeRoutePoints[i + 1].x - activeRoutePoints[i].x,
+        activeRoutePoints[i + 1].y - activeRoutePoints[i].y
+      );
+    }
+    const last = activeRoutePoints[activeRoutePoints.length - 1];
+    len += Math.hypot(mouseWorld.x - last.x, mouseWorld.y - last.y);
+    return len;
+  }, [isRouteMeasureMode, activeRoutePoints, mouseWorld]);
+
+  const activeRouteLengthM = useMemo(() => {
+    if (!calibrationData || !calibrationData.is_calibrated) return null;
+    return activeRouteLengthPx * calibrationData.scale_ratio_m_per_unit;
+  }, [activeRouteLengthPx, calibrationData]);
 
   // Compute extents
   const extents = useMemo(() => {
@@ -301,49 +371,79 @@ export function CadViewer({
         e.clientX - dragStartPos.current.clientX,
         e.clientY - dragStartPos.current.clientY
       );
-      // Pure click (distance < 6px) in manual add mode (FR-005, QA-DEF-03)
-      if (isAddManualMode && dist < 6 && onAddManualPoint && containerRef.current) {
+      if (dist < 6 && containerRef.current) {
         const target = e.target as HTMLElement | SVGElement | null;
         const isToolbar = Boolean(target?.closest("button, .viewer-controls, [data-interactive='true']"));
-        const isMarker = Boolean(target?.closest("g.cursor-pointer, .interactive-marker, .interactive-feature"));
-        if (!isToolbar && !isMarker) {
+        if (!isToolbar) {
           const rect = containerRef.current.getBoundingClientRect();
           const mouseX = e.clientX - rect.left;
           const mouseY = e.clientY - rect.top;
           const wx = (mouseX - pan.x) / scale;
           const wy = isTopLeftOrigin ? (mouseY - pan.y) / scale : (pan.y - mouseY) / scale;
+          const clickPoint = {
+            x: isImage ? Math.floor(wx) : Math.round(wx * 100) / 100,
+            y: isImage ? Math.floor(wy) : Math.round(wy * 100) / 100,
+          };
 
-          if (isImage) {
-            // Integer pixel index contract: [0, imgWidth) x [0, imgHeight) via Math.floor
-            const targetX = Math.floor(wx);
-            const targetY = Math.floor(wy);
-
-            if (targetX < 0 || targetX >= pageWidth || targetY < 0 || targetY >= pageHeight) {
-              onOutOfBoundsClick?.(wx, wy, pageWidth, pageHeight);
-              setIsDragging(false);
-              dragStartPos.current = null;
-              return;
+          // Scale calibration mode click
+          if (isCalibrateMode) {
+            if (!calibStartPoint) {
+              setRawCalibStartPoint(clickPoint);
+            } else {
+              const pA = calibStartPoint;
+              const pB = clickPoint;
+              const pDist = Math.hypot(pB.x - pA.x, pB.y - pA.y);
+              setRawCalibStartPoint(null);
+              onCalibrateComplete?.(pA, pB, pDist);
             }
+            setIsDragging(false);
+            dragStartPos.current = null;
+            return;
+          }
 
-            onAddManualPoint(targetX, targetY);
-          } else if (isPdf) {
-            // Canonical pt point: [0, display_width_pt) x [0, display_height_pt) rounded to 2 decimals
-            const targetX = Math.round(wx * 100) / 100;
-            const targetY = Math.round(wy * 100) / 100;
+          // Route measurement mode click
+          if (isRouteMeasureMode) {
+            onAddRoutePoint?.(clickPoint);
+            setIsDragging(false);
+            dragStartPos.current = null;
+            return;
+          }
 
-            if (targetX < 0 || targetX >= pageWidth || targetY < 0 || targetY >= pageHeight) {
-              onOutOfBoundsClick?.(wx, wy, pageWidth, pageHeight);
-              setIsDragging(false);
-              dragStartPos.current = null;
-              return;
+          // Manual marker add mode click
+          if (isAddManualMode && onAddManualPoint) {
+            const isMarker = Boolean(target?.closest("g.cursor-pointer, .interactive-marker, .interactive-feature"));
+            if (!isMarker) {
+              if (isImage) {
+                const targetX = Math.floor(wx);
+                const targetY = Math.floor(wy);
+
+                if (targetX < 0 || targetX >= pageWidth || targetY < 0 || targetY >= pageHeight) {
+                  onOutOfBoundsClick?.(wx, wy, pageWidth, pageHeight);
+                  setIsDragging(false);
+                  dragStartPos.current = null;
+                  return;
+                }
+
+                onAddManualPoint(targetX, targetY);
+              } else if (isPdf) {
+                const targetX = Math.round(wx * 100) / 100;
+                const targetY = Math.round(wy * 100) / 100;
+
+                if (targetX < 0 || targetX >= pageWidth || targetY < 0 || targetY >= pageHeight) {
+                  onOutOfBoundsClick?.(wx, wy, pageWidth, pageHeight);
+                  setIsDragging(false);
+                  dragStartPos.current = null;
+                  return;
+                }
+
+                onAddManualPoint(targetX, targetY);
+              } else {
+                onAddManualPoint(
+                  Math.round(wx * 100) / 100,
+                  Math.round(wy * 100) / 100
+                );
+              }
             }
-
-            onAddManualPoint(targetX, targetY);
-          } else {
-            onAddManualPoint(
-              Math.round(wx * 100) / 100,
-              Math.round(wy * 100) / 100
-            );
           }
         }
       }
@@ -890,8 +990,272 @@ export function CadViewer({
               />
             </g>
           )}
+
+          {/* Issue #37: Confirmed Measured Routes */}
+          {routes.map((r) => {
+            const isSelected = r.id === selectedRouteId;
+            const strokeColor =
+              r.category === "WIRING"
+                ? "#f59e0b"
+                : r.category === "CONDUIT"
+                ? "#10b981"
+                : r.category === "CABLE_TRAY"
+                ? "#0284c7"
+                : r.category === "BUS_DUCT"
+                ? "#a855f7"
+                : "#94a3b8";
+
+            const pathD = r.points.reduce((acc, pt, i) => `${acc} ${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`, "");
+            const midIdx = Math.floor(r.points.length / 2);
+            const midPt = r.points[midIdx] || r.points[0];
+
+            return (
+              <g
+                key={r.id}
+                data-testid={`measured-route-${r.id}`}
+                className="cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectRoute?.(r.id);
+                }}
+              >
+                <path
+                  d={pathD}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={(isSelected ? 4 : 2.5) / Math.max(scale, 1e-6)}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={r.status === "DRAFT" ? `${6 / scale},${3 / scale}` : undefined}
+                />
+                {r.points.map((pt, pIdx) => (
+                  <circle
+                    key={pIdx}
+                    cx={pt.x}
+                    cy={pt.y}
+                    r={(isSelected ? 4.5 : 3) / Math.max(scale, 1e-6)}
+                    fill={strokeColor}
+                    stroke="#0f172a"
+                    strokeWidth={1 / Math.max(scale, 1e-6)}
+                  />
+                ))}
+                {midPt && (
+                  <text
+                    x={midPt.x}
+                    y={midPt.y - 6 / Math.max(scale, 1e-6)}
+                    fontSize={Math.max(9 / Math.max(scale, 1e-6), 5)}
+                    fill={strokeColor}
+                    textAnchor="middle"
+                    className="font-mono font-bold select-none pointer-events-none"
+                    style={{ textShadow: "0 1px 2px rgba(0,0,0,0.9)" }}
+                  >
+                    {r.category === "WIRING" ? "배선" : r.category === "CONDUIT" ? "전선관" : r.item_name}{" "}
+                    {r.length_2d_m !== null && r.length_2d_m !== undefined
+                      ? `${r.length_2d_m.toFixed(2)}m`
+                      : `${r.raw_length.toFixed(0)}px`}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          {/* Issue #37: In-Progress Route Rubberband Preview */}
+          {isRouteMeasureMode && activeRoutePoints.length > 0 && (
+            <g data-testid="active-route-preview" className="pointer-events-none">
+              {activeRoutePoints.length >= 2 && (
+                <path
+                  d={activeRoutePoints.reduce((acc, pt, i) => `${acc} ${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`, "")}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={3 / Math.max(scale, 1e-6)}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+              {/* Line to live mouse cursor */}
+              {activeRoutePoints.length >= 1 && (
+                <line
+                  x1={activeRoutePoints[activeRoutePoints.length - 1].x}
+                  y1={activeRoutePoints[activeRoutePoints.length - 1].y}
+                  x2={mouseWorld.x}
+                  y2={mouseWorld.y}
+                  stroke="#fbbf24"
+                  strokeWidth={2 / Math.max(scale, 1e-6)}
+                  strokeDasharray={`${5 / Math.max(scale, 1e-6)},${3 / Math.max(scale, 1e-6)}`}
+                />
+              )}
+              {activeRoutePoints.map((pt, pIdx) => (
+                <circle
+                  key={pIdx}
+                  cx={pt.x}
+                  cy={pt.y}
+                  r={4 / Math.max(scale, 1e-6)}
+                  fill="#f59e0b"
+                  stroke="#ffffff"
+                  strokeWidth={1 / Math.max(scale, 1e-6)}
+                />
+              ))}
+              <circle
+                cx={mouseWorld.x}
+                cy={mouseWorld.y}
+                r={3 / Math.max(scale, 1e-6)}
+                fill="#fbbf24"
+              />
+            </g>
+          )}
+
+          {/* Issue #37: Scale Calibration Baseline Bar (if calibrated) */}
+          {calibrationData && calibrationData.is_calibrated && calibrationData.point_a && calibrationData.point_b && (
+            <g data-testid="calibration-overlay" className="pointer-events-none">
+              <line
+                x1={calibrationData.point_a.x}
+                y1={calibrationData.point_a.y}
+                x2={calibrationData.point_b.x}
+                y2={calibrationData.point_b.y}
+                stroke="#38bdf8"
+                strokeWidth={2.5 / Math.max(scale, 1e-6)}
+                strokeDasharray={`${6 / Math.max(scale, 1e-6)},${3 / Math.max(scale, 1e-6)}`}
+              />
+              <circle
+                cx={calibrationData.point_a.x}
+                cy={calibrationData.point_a.y}
+                r={4 / Math.max(scale, 1e-6)}
+                fill="#38bdf8"
+              />
+              <circle
+                cx={calibrationData.point_b.x}
+                cy={calibrationData.point_b.y}
+                r={4 / Math.max(scale, 1e-6)}
+                fill="#38bdf8"
+              />
+              <text
+                x={(calibrationData.point_a.x + calibrationData.point_b.x) / 2}
+                y={(calibrationData.point_a.y + calibrationData.point_b.y) / 2 - 6 / Math.max(scale, 1e-6)}
+                fontSize={Math.max(10 / Math.max(scale, 1e-6), 6)}
+                fill="#38bdf8"
+                textAnchor="middle"
+                className="font-mono font-bold select-none"
+                style={{ textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}
+              >
+                기준 축척: {calibrationData.real_world_distance_m}m ({calibrationData.pixel_distance?.toFixed(0)}px)
+              </text>
+            </g>
+          )}
+
+          {/* Issue #37: Calibration Active Click Rubberband */}
+          {isCalibrateMode && calibStartPoint && (
+            <g data-testid="calibration-rubberband" className="pointer-events-none">
+              <circle
+                cx={calibStartPoint.x}
+                cy={calibStartPoint.y}
+                r={5 / Math.max(scale, 1e-6)}
+                fill="#f43f5e"
+                stroke="#ffffff"
+                strokeWidth={1.5 / Math.max(scale, 1e-6)}
+              />
+              <line
+                x1={calibStartPoint.x}
+                y1={calibStartPoint.y}
+                x2={mouseWorld.x}
+                y2={mouseWorld.y}
+                stroke="#f43f5e"
+                strokeWidth={2 / Math.max(scale, 1e-6)}
+                strokeDasharray={`${5 / Math.max(scale, 1e-6)},${3 / Math.max(scale, 1e-6)}`}
+              />
+              <circle
+                cx={mouseWorld.x}
+                cy={mouseWorld.y}
+                r={4 / Math.max(scale, 1e-6)}
+                fill="#f43f5e"
+              />
+              <text
+                x={(calibStartPoint.x + mouseWorld.x) / 2}
+                y={(calibStartPoint.y + mouseWorld.y) / 2 - 8 / Math.max(scale, 1e-6)}
+                fontSize={Math.max(10 / Math.max(scale, 1e-6), 6)}
+                fill="#fda4af"
+                textAnchor="middle"
+                className="font-mono font-bold select-none"
+                style={{ textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}
+              >
+                {Math.hypot(mouseWorld.x - calibStartPoint.x, mouseWorld.y - calibStartPoint.y).toFixed(1)} px
+              </text>
+            </g>
+          )}
         </g>
       </svg>
+
+      {/* Active Scale Calibration Guidance Banner */}
+      {isCalibrateMode && (
+        <div
+          data-testid="calibration-guidance-banner"
+          className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2 rounded-xl bg-slate-900/95 border border-sky-500/70 shadow-2xl text-slate-100 text-xs font-medium"
+        >
+          <div className="flex items-center gap-2">
+            <Ruler size={15} className="text-sky-400 animate-pulse" />
+            <span>
+              {calibStartPoint
+                ? "두 번째 점(B)을 클릭하여 기준 거리를 지정하세요."
+                : "기준 선분(스케일 바, 치수선)의 첫 번째 점(A)을 클릭하세요."}
+            </span>
+          </div>
+          <button
+            onClick={onCancelCalibrate}
+            className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] transition"
+          >
+            취소
+          </button>
+        </div>
+      )}
+
+      {/* Active Route Measurement Guidance Banner */}
+      {isRouteMeasureMode && (
+        <div
+          data-testid="route-measure-guidance-banner"
+          className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2 rounded-xl bg-slate-900/95 border border-amber-500/70 shadow-2xl text-slate-100 text-xs font-medium"
+        >
+          <div className="flex items-center gap-2">
+            <Route size={15} className="text-amber-400 animate-pulse" />
+            <span>
+              {activeRoutePoints.length === 0
+                ? "경로의 시작점을 클릭하세요."
+                : `현재 ${activeRoutePoints.length}개 점 | ${
+                    activeRouteLengthM !== null
+                      ? `누적: ${activeRouteLengthM.toFixed(2)}m`
+                      : `누적: ${activeRouteLengthPx.toFixed(0)}px (축척 미보정)`
+                  }`}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {activeRoutePoints.length >= 2 && (
+              <button
+                onClick={onFinishRoute}
+                data-testid="btn-finish-route"
+                className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded text-[11px] transition shadow"
+              >
+                <Check size={12} />
+                완료 (Enter)
+              </button>
+            )}
+            {activeRoutePoints.length > 0 && (
+              <button
+                onClick={onUndoRoutePoint}
+                className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] transition"
+                title="직전 점 취소 (Backspace)"
+              >
+                <RotateCcw size={12} />
+                취소
+              </button>
+            )}
+            <button
+              onClick={onCancelRoute}
+              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] transition"
+              title="전체 취소 (ESC)"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Active Crop Search Guidance Banner */}
       {isCropSearchMode && (

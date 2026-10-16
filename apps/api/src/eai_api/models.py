@@ -97,7 +97,7 @@ class TakeoffSummaryRow(BaseModel):
     item_name: str
     specification: str
     unit: str
-    quantity: int
+    quantity: int | float
     quantity_method: QuantityMethod
     review_status: ReviewStatus
     drawing_name: str
@@ -362,7 +362,7 @@ class ProjectTakeoffSummaryRow(BaseModel):
     item_name: str
     specification: str
     unit: str  # Strictly separated (EA, m, m² never combined)
-    total_quantity: int
+    total_quantity: int | float
     active_drawings_count: int
     is_provisional: bool = False
     review_status: ReviewStatus = ReviewStatus.UNREVIEWED
@@ -397,6 +397,8 @@ class ProjectTakeoffResult(BaseModel):
     scope_warnings: list[str]
     unresolved_count: int = 0
     is_provisional: bool = False
+    total_equipment_ea: int = 0
+    total_route_length_m: float = 0.0
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -409,9 +411,9 @@ class RevisionItemDelta(BaseModel):
     item_name: str
     specification: str
     unit: str
-    base_quantity: int
-    compare_quantity: int
-    delta: int  # compare_quantity - base_quantity
+    base_quantity: int | float
+    compare_quantity: int | float
+    delta: int | float  # compare_quantity - base_quantity
     change_type: str  # "INCREASED", "DECREASED", "UNCHANGED", "ADDED", "REMOVED"
     notes: str = ""
 
@@ -435,10 +437,130 @@ class RevisionComparisonResult(BaseModel):
     compare_drawing: dict[str, Any]
     items_delta: list[RevisionItemDelta]
     object_deltas: list[RevisionObjectDelta]
-    total_base_qty: int
-    total_compare_qty: int
-    total_delta: int
+    total_base_qty: int | float
+    total_compare_qty: int | float
+    total_delta: int | float
     notes: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Scale Calibration (Issue #37 Workstream A)
+# ---------------------------------------------------------------------------
+class Point2D(BaseModel):
+    x: float
+    y: float
+
+    @field_validator("x", "y")
+    @classmethod
+    def validate_finite(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("좌표값은 유한한 실수(finite float)여야 합니다.")
+        return v
+
+
+class CalibrationMethod(StrEnum):
+    TWO_POINT_MANUAL = "TWO_POINT_MANUAL"
+    DXF_INSUNITS = "DXF_INSUNITS"
+    USER_OVERRIDE = "USER_OVERRIDE"
+
+
+class CalibrationData(BaseModel):
+    drawing_id: str
+    page_index: int = 0
+    coordinate_space: str = "WORLD"  # "DXF_WORLD" | "PDF_PAGE_POINT" | "IMAGE_PIXEL" | "WORLD"
+    point_a: Point2D | None = None
+    point_b: Point2D | None = None
+    pixel_distance: float | None = None  # Raw coordinate Euclidean distance
+    real_world_distance_m: float | None = None
+    input_unit: str = "m"  # "m" | "mm"
+    scale_ratio_m_per_unit: float | None = None  # meters per raw coordinate unit
+    is_calibrated: bool = False
+    method: CalibrationMethod = CalibrationMethod.TWO_POINT_MANUAL
+    notes: str = ""
+    warning: str | None = None
+    calibrated_at: datetime | None = None
+
+
+class CalibrationRequest(BaseModel):
+    page_index: int = 0
+    point_a: Point2D
+    point_b: Point2D
+    real_distance: float
+    unit: str = "m"  # "m" | "mm"
+    notes: str = ""
+
+    @field_validator("real_distance")
+    @classmethod
+    def validate_distance(cls, v: float) -> float:
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("실제 거리는 0보다 큰 유한한 숫자여야 합니다.")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Manual 2D Polyline Route Measurement (Issue #37 Workstream B & C)
+# ---------------------------------------------------------------------------
+class RouteCategory(StrEnum):
+    CONDUIT = "CONDUIT"
+    WIRING = "WIRING"
+    OTHER = "OTHER"
+
+
+class RouteStatus(StrEnum):
+    PROVISIONAL_CONFIRMED = "PROVISIONAL_CONFIRMED"
+    DRAFT = "DRAFT"
+    REJECTED = "REJECTED"
+
+
+class ManualMeasuredRoute(BaseModel):
+    id: str
+    drawing_id: str
+    sheet_key: str | None = None
+    revision: str | None = None
+    page_index: int = 0
+    coordinate_space: str = "WORLD"
+    points: list[Point2D]
+    category: RouteCategory = RouteCategory.WIRING
+    item_code: str
+    item_name: str
+    spec: str = ""
+    raw_length: float  # raw Euclidean distance sum
+    length_2d_m: float | None = None  # Calibrated 2D length in meters
+    is_calibrated: bool = False
+    calibration_id: str | None = None
+    status: RouteStatus = RouteStatus.PROVISIONAL_CONFIRMED
+    review_note: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RouteCreateRequest(BaseModel):
+    page_index: int = 0
+    coordinate_space: str | None = None
+    points: list[Point2D]
+    category: RouteCategory = RouteCategory.WIRING
+    item_code: str | None = None
+    item_name: str | None = None
+    spec: str = ""
+    status: RouteStatus = RouteStatus.PROVISIONAL_CONFIRMED
+    review_note: str = ""
+
+    @field_validator("points")
+    @classmethod
+    def validate_min_points(cls, v: list[Point2D]) -> list[Point2D]:
+        if len(v) < 2:
+            raise ValueError("경로는 최소 2개 이상의 점(points)이 필요합니다.")
+        return v
+
+
+class RouteUpdateRequest(BaseModel):
+    points: list[Point2D] | None = None
+    category: RouteCategory | None = None
+    item_code: str | None = None
+    item_name: str | None = None
+    spec: str | None = None
+    status: RouteStatus | None = None
+    review_note: str | None = None
 
 
 

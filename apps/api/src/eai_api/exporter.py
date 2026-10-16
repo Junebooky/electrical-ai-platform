@@ -8,7 +8,12 @@ import io
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from .models import ProjectTakeoffResult, RevisionComparisonResult, TakeoffResult
+from .models import (
+    ManualMeasuredRoute,
+    ProjectTakeoffResult,
+    RevisionComparisonResult,
+    TakeoffResult,
+)
 
 
 def sanitize_cell(value: object) -> object:
@@ -129,8 +134,11 @@ def export_csv_evidence(result: TakeoffResult) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
-def export_xlsx(result: TakeoffResult) -> bytes:
-    """Generate Excel workbook with 2 sheets: Takeoff Summary and Takeoff Evidence."""
+def export_xlsx(
+    result: TakeoffResult,
+    routes: list[ManualMeasuredRoute] | None = None,
+) -> bytes:
+    """Generate Excel workbook with Takeoff Summary, Takeoff Evidence, and optional Route Measurements."""
     wb = openpyxl.Workbook()
     # Sheet 1: Summary
     ws_sum = wb.active
@@ -271,15 +279,73 @@ def export_xlsx(result: TakeoffResult) -> bytes:
             else:
                 c.alignment = align_left
 
+    sheets_to_process = [ws_sum, ws_ev]
+    if routes:
+        ws_routes = wb.create_sheet(title="Route Measurements")
+        fill_routes = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+        route_headers = [
+            "순번 (No)",
+            "경로 ID (route_id)",
+            "페이지 (page_index)",
+            "분류 (category)",
+            "품목코드 (item_code)",
+            "품목명 (item_name)",
+            "규격 (spec)",
+            "원시 길이 (raw_length)",
+            "보정 여부 (is_calibrated)",
+            "2D 계획 길이 (length_2d_m)",
+            "검수 상태 (status)",
+            "검수/메모 (review_note)",
+            "좌표계 (coordinate_space)",
+            "생성일시 (created_at)",
+        ]
+        ws_routes.append(route_headers)
+        for col_num in range(1, len(route_headers) + 1):
+            c = ws_routes.cell(row=1, column=col_num)
+            c.fill = fill_routes
+            c.font = header_font
+            c.alignment = align_center
+
+        for idx, r in enumerate(routes, start=1):
+            ws_routes.append([
+                idx,
+                sanitize_cell(r.id),
+                r.page_index,
+                sanitize_cell(r.category.value if hasattr(r.category, "value") else str(r.category)),
+                sanitize_cell(r.item_code),
+                sanitize_cell(r.item_name),
+                sanitize_cell(r.spec),
+                r.raw_length,
+                "보정완료" if r.is_calibrated else "미보정",
+                r.length_2d_m if r.length_2d_m is not None else 0.0,
+                sanitize_cell(r.status.value if hasattr(r.status, "value") else str(r.status)),
+                sanitize_cell(r.review_note),
+                sanitize_cell(r.coordinate_space),
+                sanitize_cell(r.created_at.isoformat()),
+            ])
+            curr_row = ws_routes.max_row
+            for col_idx in range(1, len(route_headers) + 1):
+                cell = ws_routes.cell(row=curr_row, column=col_idx)
+                cell.font = data_font
+                if isinstance(cell.value, str) and cell.value.startswith("'"):
+                    cell.data_type = "s"
+                if col_idx in (1, 3, 4, 9, 11, 13):
+                    cell.alignment = align_center
+                elif col_idx in (8, 10):
+                    cell.alignment = align_right
+                else:
+                    cell.alignment = align_left
+        sheets_to_process.append(ws_routes)
+
     # Adjust column widths
-    for sheet in (ws_sum, ws_ev):
+    for sheet in sheets_to_process:
         for col in sheet.columns:
             max_len = max(len(str(cell.value or "")) for cell in col)
             col_letter = openpyxl.utils.get_column_letter(col[0].column)
             sheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
 
     # Invariant assertion: absolute zero formula cells allowed in exported spreadsheets
-    for sheet in (ws_sum, ws_ev):
+    for sheet in sheets_to_process:
         for row_cells in sheet.iter_rows():
             for c in row_cells:
                 assert c.data_type != "f", f"Formula injection vulnerability at {c.coordinate}: {c.value}"
@@ -296,13 +362,15 @@ def export_project_xlsx(
     result: ProjectTakeoffResult,
     revision_deltas: list[RevisionComparisonResult] | None = None,
     active_takeoffs: list[TakeoffResult] | None = None,
+    active_routes: list[ManualMeasuredRoute] | None = None,
 ) -> bytes:
-    """Generate comprehensive 4-Sheet Excel workbook for multi-drawing project.
+    """Generate comprehensive multi-sheet Excel workbook for project takeoff.
 
     Sheet 1: Project Summary (프로젝트 총괄 집계표)
     Sheet 2: Drawing Breakdown (도면별 물량 내역)
     Sheet 3: Revision Delta (설계변경 비교 집계)
     Sheet 4: Evidence (산출 근거 상세)
+    Sheet 5: Route Measurements (경로 측정 근거 상세, 선택적)
     """
     wb = openpyxl.Workbook()
 
@@ -535,15 +603,79 @@ def export_project_xlsx(
                 else:
                     cell.alignment = align_left
 
-    # Auto-adjust column widths across all 4 sheets
-    for sheet in (ws_sum, ws_bd, ws_delta, ws_ev):
+    sheets_to_process = [ws_sum, ws_bd, ws_delta, ws_ev]
+    if active_routes:
+        ws_routes = wb.create_sheet(title="Route Measurements")
+        fill_routes = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+        route_headers = [
+            "순번 (No)",
+            "도면 ID (drawing_id)",
+            "시트 키 (sheet_key)",
+            "리비전 (revision)",
+            "페이지 (page_index)",
+            "경로 ID (route_id)",
+            "분류 (category)",
+            "품목코드 (item_code)",
+            "품목명 (item_name)",
+            "규격 (spec)",
+            "원시 길이 (raw_length)",
+            "보정 여부 (is_calibrated)",
+            "2D 계획 길이 (length_2d_m)",
+            "검수 상태 (status)",
+            "검수/메모 (review_note)",
+            "좌표계 (coordinate_space)",
+            "생성일시 (created_at)",
+        ]
+        ws_routes.append(route_headers)
+        for col_idx in range(1, len(route_headers) + 1):
+            c = ws_routes.cell(row=1, column=col_idx)
+            c.fill = fill_routes
+            c.font = header_font
+            c.alignment = align_center
+
+        for idx, r in enumerate(active_routes, start=1):
+            ws_routes.append([
+                idx,
+                sanitize_cell(r.drawing_id),
+                sanitize_cell(r.sheet_key or ""),
+                sanitize_cell(r.revision or ""),
+                r.page_index,
+                sanitize_cell(r.id),
+                sanitize_cell(r.category.value if hasattr(r.category, "value") else str(r.category)),
+                sanitize_cell(r.item_code),
+                sanitize_cell(r.item_name),
+                sanitize_cell(r.spec),
+                r.raw_length,
+                "보정완료" if r.is_calibrated else "미보정",
+                r.length_2d_m if r.length_2d_m is not None else 0.0,
+                sanitize_cell(r.status.value if hasattr(r.status, "value") else str(r.status)),
+                sanitize_cell(r.review_note),
+                sanitize_cell(r.coordinate_space),
+                sanitize_cell(r.created_at.isoformat()),
+            ])
+            curr_row = ws_routes.max_row
+            for col_idx in range(1, len(route_headers) + 1):
+                cell = ws_routes.cell(row=curr_row, column=col_idx)
+                cell.font = data_font
+                if isinstance(cell.value, str) and cell.value.startswith("'"):
+                    cell.data_type = "s"
+                if col_idx in (1, 3, 4, 5, 7, 12, 14, 16):
+                    cell.alignment = align_center
+                elif col_idx in (11, 13):
+                    cell.alignment = align_right
+                else:
+                    cell.alignment = align_left
+        sheets_to_process.append(ws_routes)
+
+    # Auto-adjust column widths across all sheets
+    for sheet in sheets_to_process:
         for col in sheet.columns:
             max_len = max(len(str(cell.value or "")) for cell in col)
             col_letter = openpyxl.utils.get_column_letter(col[0].column)
             sheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
 
     # Invariant assertion: absolute zero formula cells allowed
-    for sheet in (ws_sum, ws_bd, ws_delta, ws_ev):
+    for sheet in sheets_to_process:
         for row_cells in sheet.iter_rows():
             for c in row_cells:
                 assert c.data_type != "f", f"Formula injection vulnerability at {c.coordinate}: {c.value}"

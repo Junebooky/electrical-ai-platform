@@ -31,6 +31,12 @@
    - 참조도면(`sheet_role: REFERENCE`) 자동 적산 제외 및 스코프 중복 경고.
    - 설계변경 물량 증감(Revision Pragmatic Diff, Delta +/-) 및 객체 단위 매칭 추적.
    - 4시트 전문 Excel(`Project Summary`, `Drawing Breakdown`, `Revision Delta`, `Evidence`) 및 CSV 내보내기 (수식 주입 방어 적용).
+8. **축척 보정 및 2D 계획 경로 측정 (Issue #37)**:
+   - 2점 클릭 축척 보정 (`pixel_distance` $\rightarrow$ `real_distance_m`, 도면당 영속 저장).
+   - 배선/전선관 2D 폴리라인 인터랙티브 측정 (실시간 길이 누적 배지, Enter 완료, Backspace 취소, ESC 취소).
+   - 단위 격리 원칙: 기구 수량(`EA`)과 선형 연장(`m`)의 합산 원천 차단 및 독립 KPI 카드 표기.
+   - 잠정(`provisional`) m 물량 안전 태그 및 엑셀 `Route Measurements` 시트 자동 생성 (수식 주입 방어 적용).
+   - 1-클릭 7.00m 오라클 데모 탑재 (100px=10m 스케일 바, 70px=7.00m 2분기 배선 검증).
 
 ---
 
@@ -42,6 +48,7 @@
 ```
 - 사전 필수 환경(Python 3.12+, Node 20+) 및 포트 충돌(8000, 3000)을 자동 진단하고 백엔드와 프론트엔드를 한 번에 실행합니다.
 - 웹 브라우저에서 **`http://localhost:3000`** 접속 후:
+  - **[2D 경로 데모 (7m) (Issue #37)]**: 축척 보정(100px=10m) 및 7.00m 배선 경로 검증, 단위 격리(EA vs m) 확인.
   - **[다중 도면 데모 (Issue #35)]**: 14 EA $\rightarrow$ 18 EA (+4 EA) 리비전 교체 및 4시트 엑셀 검증.
   - **[실전 데모 (Live Demo)]**: 3종 멀티포맷(IMAGE, DXF, PDF) 기호 시각 검색 및 검수.
 - 서비스 종료 시 터미널에서 `Ctrl + C` 또는 `./scripts/dev-stop.sh`를 실행합니다.

@@ -15,6 +15,9 @@ import {
   PdfPathFeature,
   SymbolCandidate,
   CandidateBulkReviewRequest,
+  CalibrationData,
+  ManualMeasuredRoute,
+  RouteCategory,
 } from "@/types/cad";
 import { CadViewer } from "@/components/CadViewer";
 import { MappingPanel } from "@/components/MappingPanel";
@@ -42,6 +45,9 @@ import {
   Crop,
   CheckCircle2,
   Building,
+  Ruler,
+  Route as RouteIcon,
+  Trash2,
 } from "lucide-react";
 
 export default function WorkspacePage() {
@@ -54,7 +60,7 @@ export default function WorkspacePage() {
 
   // UI state
   const [viewMode, setViewMode] = useState<"project" | "drawing">("drawing");
-  const [activeRightTab, setActiveRightTab] = useState<"takeoff" | "candidates" | "mapping" | "layers">("takeoff");
+  const [activeRightTab, setActiveRightTab] = useState<"takeoff" | "routes" | "candidates" | "mapping" | "layers">("takeoff");
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [highlightedItemCode, setHighlightedItemCode] = useState<string | null>(null);
   const [hiddenLayers, setHiddenLayers] = useState<Set<string>>(new Set());
@@ -77,6 +83,27 @@ export default function WorkspacePage() {
   const [cropSearchAllPages, setCropSearchAllPages] = useState<boolean>(false);
   const [isSearchingSymbols, setIsSearchingSymbols] = useState<boolean>(false);
   const [searchSuccessMessage, setSearchSuccessMessage] = useState<string | null>(null);
+
+  // Issue #37: Scale Calibration & 2D Route Measurement
+  const [calibrationData, setCalibrationData] = useState<CalibrationData | null>(null);
+  const [isCalibrateMode, setIsCalibrateMode] = useState<boolean>(false);
+  const [calibModalOpen, setCalibModalOpen] = useState<boolean>(false);
+  const [pendingCalibPoints, setPendingCalibPoints] = useState<{
+    pointA: { x: number; y: number };
+    pointB: { x: number; y: number };
+    pixelDist: number;
+  } | null>(null);
+  const [calibRealDistance, setCalibRealDistance] = useState<string>("10.0");
+  const [calibNotes, setCalibNotes] = useState<string>("");
+
+  const [routes, setRoutes] = useState<ManualMeasuredRoute[]>([]);
+  const [isRouteMeasureMode, setIsRouteMeasureMode] = useState<boolean>(false);
+  const [activeRoutePoints, setActiveRoutePoints] = useState<{ x: number; y: number }[]>([]);
+  const [activeRouteCategory, setActiveRouteCategory] = useState<RouteCategory>("WIRING");
+  const [activeRouteItemCode, setActiveRouteItemCode] = useState<string>("WIRING_POWER");
+  const [activeRouteItemName, setActiveRouteItemName] = useState<string>("배선 (2D 계획 경로)");
+  const [activeRouteSpec, setActiveRouteSpec] = useState<string>("F-CV 2.5sq 2C");
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
 
   interface PendingManualMarker {
     drawingId: string;
@@ -134,7 +161,7 @@ export default function WorkspacePage() {
       const seq = ++requestSeqRef.current;
       activeDrawingIdRef.current = drawingId;
       try {
-        const [drawingData, mappingRules, candData] = await Promise.all([
+        const [drawingData, mappingRules, candData, calibData, routesList] = await Promise.all([
           api.getDrawing(projectId, drawingId),
           api.getMappings(projectId, drawingId),
           api.getCandidates(projectId, drawingId).catch(() => ({
@@ -142,6 +169,8 @@ export default function WorkspacePage() {
             summary: { total: 0, proposed: 0, accepted: 0, rejected: 0 },
             candidates: [],
           })),
+          api.getCalibration(projectId, drawingId, 0).catch(() => null),
+          api.listRoutes(projectId, drawingId).catch(() => []),
         ]);
         if (requestSeqRef.current !== seq || activeDrawingIdRef.current !== drawingId) {
           return; // Newer request already initiated, discard stale response
@@ -149,6 +178,12 @@ export default function WorkspacePage() {
         setCurrentDrawing(drawingData);
         setMappings(mappingRules);
         setCandidates(candData.candidates || []);
+        setCalibrationData(calibData);
+        setRoutes(routesList);
+        setSelectedRouteId(null);
+        setActiveRoutePoints([]);
+        setIsCalibrateMode(false);
+        setIsRouteMeasureMode(false);
         setSelectedCandidate(null);
         setCurrentPageIndex(0);
         setSelectedFeature(null);
@@ -319,6 +354,170 @@ export default function WorkspacePage() {
     setSelectedFeature(null);
     setSelectedCandidate(null);
     setPageFeatures(null);
+    if (currentProject && currentDrawing) {
+      api.getCalibration(currentProject.id, currentDrawing.drawing_id, newIndex)
+        .then((calib) => setCalibrationData(calib))
+        .catch(() => setCalibrationData(null));
+    }
+  };
+
+  // Issue #37: Scale calibration & route measurement handlers
+  const refreshCalibrationAndRoutes = useCallback(
+    async (projectId: string, drawingId: string, pageIndex = 0) => {
+      try {
+        const [calib, rList] = await Promise.all([
+          api.getCalibration(projectId, drawingId, pageIndex).catch(() => null),
+          api.listRoutes(projectId, drawingId).catch(() => []),
+        ]);
+        setCalibrationData(calib);
+        setRoutes(rList);
+      } catch (e) {
+        console.error("Failed to load calibration or routes", e);
+      }
+    },
+    []
+  );
+
+  const handleStartCalibrate = () => {
+    setIsCalibrateMode(true);
+    setIsRouteMeasureMode(false);
+    setIsAddManualMode(false);
+    setIsCropSearchMode(false);
+  };
+
+  const handleCalibrateComplete = (
+    pointA: { x: number; y: number },
+    pointB: { x: number; y: number },
+    pixelDist: number
+  ) => {
+    setIsCalibrateMode(false);
+    setPendingCalibPoints({ pointA, pointB, pixelDist });
+    setCalibRealDistance("10.0");
+    setCalibNotes("");
+    setCalibModalOpen(true);
+  };
+
+  const handleApplyCalibration = async () => {
+    if (!currentProject || !currentDrawing || !pendingCalibPoints) return;
+    const realDist = parseFloat(calibRealDistance);
+    if (isNaN(realDist) || realDist <= 0) {
+      setErrorMessage("실제 거리는 0보다 큰 양수여야 합니다.");
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const calib = await api.saveCalibration(currentProject.id, currentDrawing.drawing_id, {
+        page_index: currentPageIndex,
+        method: "TWO_POINT_MANUAL",
+        point_a: pendingCalibPoints.pointA,
+        point_b: pendingCalibPoints.pointB,
+        real_distance: realDist,
+        unit: "m",
+        notes: calibNotes || `기준 2점 보정 (${pendingCalibPoints.pixelDist.toFixed(1)}px = ${realDist}m)`,
+      });
+      setCalibrationData(calib);
+      setCalibModalOpen(false);
+      setPendingCalibPoints(null);
+      await refreshCalibrationAndRoutes(currentProject.id, currentDrawing.drawing_id, currentPageIndex);
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+    } catch (err: unknown) {
+      setErrorMessage("축척 보정 저장 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleResetCalibration = async () => {
+    if (!currentProject || !currentDrawing) return;
+    setIsSaving(true);
+    try {
+      await api.deleteCalibration(currentProject.id, currentDrawing.drawing_id, currentPageIndex);
+      setCalibrationData(null);
+      await refreshCalibrationAndRoutes(currentProject.id, currentDrawing.drawing_id, currentPageIndex);
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+    } catch (err: unknown) {
+      setErrorMessage("축척 초기화 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleToggleRouteMeasure = () => {
+    if (!isRouteMeasureMode) {
+      setIsRouteMeasureMode(true);
+      setIsCalibrateMode(false);
+      setIsAddManualMode(false);
+      setIsCropSearchMode(false);
+      setActiveRoutePoints([]);
+    } else {
+      setIsRouteMeasureMode(false);
+      setActiveRoutePoints([]);
+    }
+  };
+
+  const handleAddRoutePoint = (pt: { x: number; y: number }) => {
+    setActiveRoutePoints((prev) => [...prev, pt]);
+  };
+
+  const handleUndoRoutePoint = () => {
+    setActiveRoutePoints((prev) => prev.slice(0, -1));
+  };
+
+  const handleCancelRoute = () => {
+    setActiveRoutePoints([]);
+    setIsRouteMeasureMode(false);
+  };
+
+  const handleFinishRoute = async () => {
+    if (!currentProject || !currentDrawing) return;
+    if (activeRoutePoints.length < 2) {
+      setErrorMessage("경로를 등록하려면 최소 2개 이상의 점을 지정해야 합니다.");
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const coordSpace =
+        currentDrawing.source_type === "IMAGE"
+          ? "IMAGE_PIXEL"
+          : currentDrawing.source_type === "PDF"
+          ? "PDF_PT"
+          : "WORLD";
+
+      await api.createRoute(currentProject.id, currentDrawing.drawing_id, {
+        page_index: currentPageIndex,
+        coordinate_space: coordSpace,
+        points: activeRoutePoints,
+        category: activeRouteCategory,
+        item_code: activeRouteItemCode,
+        item_name: activeRouteItemName,
+        spec: activeRouteSpec,
+        status: "PROVISIONAL_CONFIRMED",
+      });
+
+      setActiveRoutePoints([]);
+      await refreshCalibrationAndRoutes(currentProject.id, currentDrawing.drawing_id, currentPageIndex);
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+      setActiveRightTab("routes");
+    } catch (err: unknown) {
+      setErrorMessage("경로 등록 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteRoute = async (routeId: string) => {
+    if (!currentProject || !currentDrawing) return;
+    setIsSaving(true);
+    try {
+      await api.deleteRoute(currentProject.id, currentDrawing.drawing_id, routeId);
+      if (selectedRouteId === routeId) setSelectedRouteId(null);
+      await refreshCalibrationAndRoutes(currentProject.id, currentDrawing.drawing_id, currentPageIndex);
+      await refreshTakeoff(currentProject.id, currentDrawing.drawing_id);
+    } catch (err: unknown) {
+      setErrorMessage("경로 삭제 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Confirm manual object addition after mandatory item & reason selection
@@ -605,6 +804,11 @@ export default function WorkspacePage() {
     return currentDrawing.objects.find((o) => o.id === selectedObjectId) || null;
   }, [selectedObjectId, currentDrawing]);
 
+  const selectedRoute: ManualMeasuredRoute | null = useMemo(() => {
+    if (!selectedRouteId) return null;
+    return routes.find((r) => r.id === selectedRouteId) || null;
+  }, [selectedRouteId, routes]);
+
   const selectedEvidence: TakeoffEvidenceRow | null = useMemo(() => {
     if (!selectedObjectId || !takeoff) return null;
     return takeoff.evidence.find((e) => e.source_object_id === selectedObjectId) || null;
@@ -798,6 +1002,56 @@ export default function WorkspacePage() {
                 <Plus size={14} />
                 누락 기구 수동 추가
               </button>
+
+              {/* Issue #37: Scale Calibration */}
+              <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg p-0.5">
+                <button
+                  onClick={handleStartCalibrate}
+                  data-testid="btn-calibrate-scale"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition ${
+                    isCalibrateMode
+                      ? "bg-sky-500 text-slate-950 font-bold shadow"
+                      : calibrationData?.is_calibrated
+                      ? "bg-sky-500/20 text-sky-300 hover:bg-sky-500/30"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  }`}
+                  title="2점을 클릭하여 도면의 실제 거리(m)를 캘리브레이션합니다."
+                >
+                  <Ruler size={13} className={isCalibrateMode ? "animate-pulse" : ""} />
+                  <span>
+                    {isCalibrateMode
+                      ? "보정 진행 중..."
+                      : calibrationData?.is_calibrated
+                      ? `축척: 1px=${calibrationData.scale_ratio_m_per_unit.toFixed(3)}m`
+                      : "축척 보정"}
+                  </span>
+                </button>
+                {calibrationData?.is_calibrated && (
+                  <button
+                    onClick={handleResetCalibration}
+                    data-testid="btn-reset-calibration"
+                    className="p-1 hover:text-rose-400 text-slate-400 rounded transition"
+                    title="축척 초기화 (미설정으로 되돌림)"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              {/* Issue #37: 2D Route Measurement Mode */}
+              <button
+                onClick={handleToggleRouteMeasure}
+                data-testid="btn-route-measure-mode"
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition border ${
+                  isRouteMeasureMode
+                    ? "bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-500/20 font-bold"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+                title="도면 상의 배선 또는 전선관 경로를 폴리라인으로 실측합니다 (잠정 m 물량)"
+              >
+                <RouteIcon size={14} className={isRouteMeasureMode ? "animate-spin" : ""} />
+                <span>{isRouteMeasureMode ? "경로 측정 중..." : "2D 경로 측정 (m)"}</span>
+              </button>
             </>
           )}
 
@@ -811,6 +1065,39 @@ export default function WorkspacePage() {
               if (file) handleFileUpload(file);
             }}
           />
+
+          <button
+            onClick={async () => {
+              setIsLoading(true);
+              try {
+                const res = await api.seedRouteOracleDemo(true);
+                const projList = await api.listProjects();
+                setProjects(projList);
+                const targetProj: ProjectMetadata = projList.find((p) => p.id === res.project_id) || {
+                  id: res.project_id,
+                  name: "[데모] 2D 경로 측정 & 축척 보정 오라클",
+                  description: "축척 보정 및 2D 계획 경로 오라클 데모",
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                  drawing_count: 1,
+                };
+                setCurrentProject(targetProj);
+                await refreshDrawings(res.project_id, res.drawing_id);
+                setViewMode("drawing");
+              } catch (err: unknown) {
+                setErrorMessage("경로 데모 시드 실패: " + (err instanceof Error ? err.message : String(err)));
+              } finally {
+                setIsLoading(false);
+              }
+            }}
+            disabled={isLoading}
+            data-testid="btn-route-oracle-demo"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md shadow-amber-600/20 transition"
+            title="축척 보정(100px=10m) 및 7.00m 배선 경로 오라클 데모 로드"
+          >
+            <RouteIcon size={13} />
+            <span>2D 경로 데모 (7m)</span>
+          </button>
 
           <button
             onClick={handleSeedMultiDrawingDemo}
@@ -844,6 +1131,70 @@ export default function WorkspacePage() {
           </button>
         </div>
       </header>
+
+      {/* Route Measurement Category & Spec Controls Bar (Issue #37) */}
+      {viewMode === "drawing" && isRouteMeasureMode && (
+        <div
+          data-testid="route-controls-bar"
+          className="bg-amber-950/80 border-b border-amber-600/60 px-4 py-2 text-xs text-amber-200 flex items-center justify-between flex-wrap gap-2"
+        >
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-amber-300 flex items-center gap-1">
+              <RouteIcon size={14} />
+              경로 옵션:
+            </span>
+            <div className="flex items-center gap-1">
+              <label className="text-[11px] text-amber-200/80">종류:</label>
+              <select
+                value={activeRouteCategory}
+                onChange={(e) => {
+                  const cat = e.target.value as RouteCategory;
+                  setActiveRouteCategory(cat);
+                  if (cat === "WIRING") {
+                    setActiveRouteItemCode("WIRING_POWER");
+                    setActiveRouteItemName("배선 (2D 계획 경로)");
+                    setActiveRouteSpec("F-CV 2.5sq 2C");
+                  } else if (cat === "CONDUIT") {
+                    setActiveRouteItemCode("CONDUIT_PVC");
+                    setActiveRouteItemName("전선관 (2D 계획 경로)");
+                    setActiveRouteSpec("HI-PVC 16C");
+                  } else if (cat === "CABLE_TRAY") {
+                    setActiveRouteItemCode("TRAY_STEEL");
+                    setActiveRouteItemName("케이블트레이 (2D 계획 경로)");
+                    setActiveRouteSpec("W300 H100");
+                  } else {
+                    setActiveRouteItemCode("OTHER_ROUTE");
+                    setActiveRouteItemName("기타 경로");
+                    setActiveRouteSpec("기타 규격");
+                  }
+                }}
+                data-testid="select-route-category"
+                className="bg-slate-900 border border-amber-600/60 rounded px-2 py-1 text-xs text-amber-100 focus:outline-none"
+              >
+                <option value="WIRING">전원 배선 (WIRING)</option>
+                <option value="CONDUIT">전선관 (CONDUIT)</option>
+                <option value="CABLE_TRAY">케이블트레이 (CABLE_TRAY)</option>
+                <option value="BUS_DUCT">버스덕트 (BUS_DUCT)</option>
+                <option value="OTHER">기타 경로 (OTHER)</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <label className="text-[11px] text-amber-200/80">규격:</label>
+              <input
+                type="text"
+                value={activeRouteSpec}
+                onChange={(e) => setActiveRouteSpec(e.target.value)}
+                data-testid="input-route-spec"
+                className="bg-slate-900 border border-amber-600/60 rounded px-2 py-1 text-xs text-amber-100 font-mono w-32 focus:outline-none"
+                placeholder="규격 입력"
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-amber-300/80">
+            <span>마우스 클릭으로 점 추가 | <b>Enter/더블클릭</b>으로 등록 | <b>Backspace</b>로 취소</span>
+          </div>
+        </div>
+      )}
 
       {/* PDF Mode Notice Banner & Page Navigation (PR B) */}
       {viewMode === "drawing" && currentDrawing?.source_type === "PDF" && (
@@ -1046,6 +1397,22 @@ export default function WorkspacePage() {
                 }}
                 isCropSearchMode={isCropSearchMode}
                 onCropComplete={handleCropComplete}
+                isCalibrateMode={isCalibrateMode}
+                calibrationData={calibrationData}
+                onCalibrateComplete={handleCalibrateComplete}
+                onCancelCalibrate={() => setIsCalibrateMode(false)}
+                isRouteMeasureMode={isRouteMeasureMode}
+                routes={routes}
+                activeRoutePoints={activeRoutePoints}
+                onAddRoutePoint={handleAddRoutePoint}
+                onFinishRoute={handleFinishRoute}
+                onCancelRoute={handleCancelRoute}
+                onUndoRoutePoint={handleUndoRoutePoint}
+                selectedRouteId={selectedRouteId}
+                onSelectRoute={(id) => {
+                  setSelectedRouteId(id);
+                  if (id) setActiveRightTab("routes");
+                }}
               />
 
               {/* Selected AI Candidate Card (Issue #23) */}
@@ -1217,6 +1584,76 @@ export default function WorkspacePage() {
                 </div>
               )}
 
+              {/* Selected Measured Route Card (Issue #37) */}
+              {selectedRoute && (
+                <div
+                  data-testid="selected-route-card"
+                  className="absolute bottom-6 right-6 z-30 w-96 bg-slate-900/95 backdrop-blur-md border border-amber-500/50 rounded-xl shadow-2xl p-4 text-slate-200"
+                >
+                  <div className="flex items-start justify-between border-b border-slate-800 pb-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded text-xs font-semibold">
+                        2D 실측 계획 경로
+                      </span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        P.{selectedRoute.page_index + 1}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedRouteId(null)}
+                      className="text-slate-400 hover:text-white text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center justify-between p-2.5 bg-slate-950/80 rounded border border-slate-800">
+                      <div>
+                        <span className="block text-slate-400 text-[10px] uppercase">품목 / 규격</span>
+                        <span className="font-semibold text-amber-300 text-sm">
+                          {selectedRoute.item_name} ({selectedRoute.spec})
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="block text-slate-400 text-[10px] uppercase">측정 길이</span>
+                        <span className="font-mono text-emerald-400 font-bold text-base">
+                          {selectedRoute.length_2d_m !== null && selectedRoute.length_2d_m !== undefined
+                            ? `${selectedRoute.length_2d_m.toFixed(2)} m`
+                            : `${selectedRoute.raw_length.toFixed(1)} px (미보정)`}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-slate-400 font-mono">
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">경로 ID</span>
+                        <span className="text-slate-300 truncate block text-[11px]">{selectedRoute.id}</span>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">품목 코드</span>
+                        <span className="text-sky-400 font-bold">{selectedRoute.item_code}</span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500">버텍스 점 수</span>
+                        <span className="text-slate-300">{selectedRoute.points.length}개 좌표</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-2">
+                      <button
+                        onClick={() => handleDeleteRoute(selectedRoute.id)}
+                        data-testid="btn-delete-selected-route"
+                        className="w-full py-2 px-3 bg-rose-600/80 hover:bg-rose-500 text-white rounded font-medium text-xs flex items-center justify-center gap-1.5 transition shadow"
+                      >
+                        <Trash2 size={13} />
+                        <span>경로 삭제</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Floating Review Drawer when object is selected */}
               <ReviewDrawer
                 object={selectedObject}
@@ -1384,6 +1821,7 @@ export default function WorkspacePage() {
               <div className="flex items-center border-b border-slate-800 bg-slate-950/80 px-1 text-xs">
                 <button
                   onClick={() => setActiveRightTab("takeoff")}
+                  data-testid="tab-takeoff"
                   className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
                     activeRightTab === "takeoff"
                       ? "border-emerald-500 text-emerald-400"
@@ -1405,6 +1843,18 @@ export default function WorkspacePage() {
                   기호 검수 ({candidates.length})
                 </button>
                 <button
+                  onClick={() => setActiveRightTab("routes")}
+                  data-testid="tab-routes"
+                  className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
+                    activeRightTab === "routes"
+                      ? "border-amber-500 text-amber-400"
+                      : "border-transparent text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <RouteIcon size={14} />
+                  경로 ({routes.length})
+                </button>
+                <button
                   onClick={() => setActiveRightTab("mapping")}
                   className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
                     activeRightTab === "mapping"
@@ -1419,7 +1869,7 @@ export default function WorkspacePage() {
                   onClick={() => setActiveRightTab("layers")}
                   className={`flex items-center gap-1.5 py-3 px-3 border-b-2 font-medium transition ${
                     activeRightTab === "layers"
-                      ? "border-amber-500 text-amber-400"
+                      ? "border-purple-500 text-purple-400"
                       : "border-transparent text-slate-400 hover:text-slate-200"
                   }`}
                 >
@@ -1430,6 +1880,98 @@ export default function WorkspacePage() {
 
               {/* Panel Content */}
               <div className="flex-1 overflow-hidden">
+                {activeRightTab === "routes" && (
+                  <div className="h-full flex flex-col p-4 overflow-y-auto space-y-3" data-testid="routes-list-tab">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <div>
+                        <h3 className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                          <RouteIcon size={14} className="text-amber-400" />
+                          2D 실측 계획 경로 목록
+                        </h3>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          축척 보정 기반 2D 폴리라인 수동 측정 (잠정 m 물량)
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleToggleRouteMeasure}
+                        data-testid="btn-add-route-tab"
+                        className={`px-2.5 py-1 text-xs rounded font-medium flex items-center gap-1 transition ${
+                          isRouteMeasureMode
+                            ? "bg-amber-500 text-slate-950 font-bold"
+                            : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                        }`}
+                      >
+                        <Plus size={12} />
+                        {isRouteMeasureMode ? "측정 중..." : "경로 측정"}
+                      </button>
+                    </div>
+
+                    {routes.length === 0 ? (
+                      <div className="text-center py-12 text-slate-500 text-xs">
+                        등록된 2D 경로가 없습니다.<br />
+                        상단 [2D 경로 측정 (m)]을 클릭하여 배선/전선관 경로를 그려보세요.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {routes.map((r, idx) => (
+                          <div
+                            key={r.id}
+                            data-testid={`route-item-${r.id}`}
+                            className={`p-3 rounded-lg border transition cursor-pointer ${
+                              selectedRouteId === r.id
+                                ? "bg-amber-500/10 border-amber-500/50"
+                                : "bg-slate-950/60 border-slate-800 hover:border-slate-700"
+                            }`}
+                            onClick={() => setSelectedRouteId(r.id)}
+                          >
+                            <div className="flex items-start justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[10px] text-slate-500">#{idx + 1}</span>
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                    r.category === "WIRING"
+                                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                      : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                  }`}
+                                >
+                                  {r.category === "WIRING" ? "배선" : r.category === "CONDUIT" ? "전선관" : r.category}
+                                </span>
+                                <span className="text-xs font-bold text-slate-200">{r.item_name}</span>
+                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteRoute(r.id);
+                                }}
+                                data-testid={`btn-delete-route-${r.id}`}
+                                className="text-slate-500 hover:text-rose-400 p-1 rounded transition"
+                                title="경로 삭제"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+
+                            <div className="mt-2 flex items-baseline justify-between text-xs">
+                              <span className="font-mono text-slate-400 text-[11px]">{r.spec}</span>
+                              <div className="text-right">
+                                <span className="font-mono font-bold text-sm text-amber-400">
+                                  {r.length_2d_m !== null && r.length_2d_m !== undefined
+                                    ? `${r.length_2d_m.toFixed(2)} m`
+                                    : `${r.raw_length.toFixed(1)} px`}
+                                </span>
+                                {r.length_2d_m !== null && r.length_2d_m !== undefined && (
+                                  <span className="block text-[10px] text-slate-500">
+                                    (원시 {r.raw_length.toFixed(1)}px)
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {activeRightTab === "candidates" && (
                   <CandidateReviewTable
                     candidates={candidates}
@@ -1595,6 +2137,92 @@ export default function WorkspacePage() {
           </div>
         )}
       </div>
+
+      {/* Scale Calibration Input Modal (Issue #37) */}
+      {calibModalOpen && pendingCalibPoints && (
+        <div
+          data-testid="calibration-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+        >
+          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-sm w-full p-5 text-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2">
+                <Ruler size={16} className="text-sky-400" />
+                <h3 className="text-sm font-bold">2점 축척 기준 보정</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setCalibModalOpen(false);
+                  setPendingCalibPoints(null);
+                }}
+                className="text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 bg-slate-950/80 rounded border border-slate-800 space-y-1">
+                <div className="text-slate-400">도면 상 측정 거리:</div>
+                <div className="font-mono text-base font-bold text-sky-300">
+                  {pendingCalibPoints.pixelDist.toFixed(1)} px
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  실제 세계 거리 (m):
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.001"
+                    value={calibRealDistance}
+                    onChange={(e) => setCalibRealDistance(e.target.value)}
+                    data-testid="input-calibration-real-distance"
+                    className="flex-1 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100 font-mono focus:outline-none focus:border-sky-500"
+                    placeholder="예: 10.0"
+                    autoFocus
+                  />
+                  <span className="font-mono text-slate-400 font-bold">m</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">참고 메모 (선택):</label>
+                <input
+                  type="text"
+                  value={calibNotes}
+                  onChange={(e) => setCalibNotes(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-600"
+                  placeholder="예: 스케일 바 10m 기준"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  onClick={handleApplyCalibration}
+                  disabled={isSaving}
+                  data-testid="btn-apply-calibration"
+                  className="flex-1 py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded font-semibold transition"
+                >
+                  보정 적용
+                </button>
+                <button
+                  onClick={() => {
+                    setCalibModalOpen(false);
+                    setPendingCalibPoints(null);
+                  }}
+                  className="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded font-medium transition"
+                >
+                  취소
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -185,6 +185,21 @@ export function ProjectOverview({
     }
   };
 
+  // 1-Click Route Oracle Demo Seed (Issue #37)
+  const handleSeedRouteOracle = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await api.seedRouteOracleDemo(true);
+      if (onRefreshProject) onRefreshProject();
+      onOpenDrawing(res.drawing_id);
+    } catch (err: unknown) {
+      setError("경로 오라클 데모 시드 실패: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const totalLightQty =
     takeoffResult?.summary.find((r) => r.item_code === "LIGHT")?.total_quantity || 0;
 
@@ -205,12 +220,23 @@ export function ProjectOverview({
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                다중 도면 스코프 지정, 독립 층/구역 합산, REV 교체(14→18/+4), 및 4시트 엑셀 내보내기
+                다중 도면 스코프 지정, 독립 층/구역 합산, REV 교체(14→18/+4), 축척 보정·2D 경로 측정 및 엑셀 내보내기
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={handleSeedRouteOracle}
+              disabled={isLoading}
+              data-testid="btn-seed-route-oracle"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow transition"
+              title="축척 보정(100px=10m) 및 7.00m 배선 경로 오라클 데모 로드"
+            >
+              <Play size={13} className="fill-current" />
+              <span>2D 경로 오라클 데모 (7m)</span>
+            </button>
+
             <button
               onClick={handleSeedDemo}
               disabled={isLoading}
@@ -238,7 +264,7 @@ export function ProjectOverview({
               className="flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow transition shadow-indigo-600/20"
             >
               <FileSpreadsheet size={14} />
-              <span>4시트 엑셀 다운로드 (XLSX)</span>
+              <span>엑셀 다운로드 (XLSX)</span>
             </a>
           </div>
         </div>
@@ -259,7 +285,7 @@ export function ProjectOverview({
         )}
 
         {/* Metric KPI Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
             <span className="block text-[11px] font-medium text-slate-400">활성 도면 / 전체 도면</span>
             <div className="flex items-baseline gap-1.5 mt-1">
@@ -276,15 +302,35 @@ export function ProjectOverview({
           </div>
 
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
-            <span className="block text-[11px] font-medium text-slate-400">조명기구 (LIGHT) 총 수량</span>
+            <span className="block text-[11px] font-medium text-slate-400">기구 총 수량 (EA)</span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span
-                data-testid="metric-light-total-qty"
+                data-testid="metric-equipment-total-ea"
                 className="text-xl font-bold text-emerald-400"
               >
-                {totalLightQty}
+                {takeoffResult?.total_equipment_ea ?? totalLightQty}
               </span>
-              <span className="text-xs text-slate-400 font-medium">EA (정답: 14 또는 18)</span>
+              <span
+                data-testid="metric-light-total-qty"
+                className="text-xs text-slate-400 font-medium"
+              >
+                EA
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
+            <span className="block text-[11px] font-medium text-slate-400">2D 계획 경로 총 연장 (m)</span>
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span
+                data-testid="metric-route-total-length-m"
+                className="text-xl font-bold text-amber-400"
+              >
+                {typeof takeoffResult?.total_route_length_m === "number"
+                  ? takeoffResult.total_route_length_m.toFixed(1)
+                  : "0.0"}
+              </span>
+              <span className="text-xs text-amber-400/80 font-medium">m (잠정)</span>
             </div>
           </div>
 
@@ -294,7 +340,7 @@ export function ProjectOverview({
               <span className="text-xl font-bold text-purple-400">
                 {takeoffResult?.summary.length || 0}
               </span>
-              <span className="text-xs text-slate-500">개 규격별 항목</span>
+              <span className="text-xs text-slate-500">개 항목</span>
             </div>
           </div>
 

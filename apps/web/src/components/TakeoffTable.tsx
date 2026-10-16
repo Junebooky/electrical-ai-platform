@@ -35,7 +35,12 @@ export function TakeoffTable({
   const [activeTab, setActiveTab] = useState<"summary" | "evidence">("summary");
   const [evidenceFilter, setEvidenceFilter] = useState<string>("ALL");
 
-  const totalQuantity = takeoff.summary.reduce((acc, row) => acc + row.quantity, 0);
+  const totalEa = takeoff.summary
+    .filter((r) => r.unit === "EA" || !r.unit)
+    .reduce((acc, row) => acc + (typeof row.quantity === "number" ? row.quantity : 0), 0);
+  const totalMeters = takeoff.summary
+    .filter((r) => r.unit === "m")
+    .reduce((acc, row) => acc + (typeof row.quantity === "number" ? row.quantity : 0), 0);
 
   const filteredEvidence = takeoff.evidence.filter((ev) => {
     if (evidenceFilter === "ALL") return true;
@@ -57,12 +62,14 @@ export function TakeoffTable({
               물량산출 결과표
             </h2>
             {takeoff.is_provisional || (takeoff.unresolved_count ?? 0) > 0 ? (
-              <div className="flex items-center gap-1.5">
+              <div data-testid="takeoff-summary-badges" className="flex items-center gap-1.5 flex-wrap">
                 <span
                   id="badge-takeoff-provisional"
                   className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30"
                 >
-                  잠정 {totalQuantity} 개
+                  {totalMeters > 0
+                    ? `기구 ${totalEa} EA / 경로 ${totalMeters.toFixed(1)} m`
+                    : `잠정 ${totalEa} EA`}
                 </span>
                 {(takeoff.unresolved_count ?? 0) > 0 && (
                   <span
@@ -78,7 +85,9 @@ export function TakeoffTable({
                 id="badge-takeoff-complete"
                 className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
               >
-                총 {totalQuantity} 개 (검수완료)
+                {totalMeters > 0
+                  ? `기구 ${totalEa} EA / 경로 ${totalMeters.toFixed(1)} m`
+                  : `총 ${totalEa} EA (검수완료)`}
               </span>
             )}
           </div>

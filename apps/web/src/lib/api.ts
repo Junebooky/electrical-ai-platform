@@ -19,6 +19,11 @@ import {
   DrawingScopeUpdate,
   ProjectTakeoffResult,
   RevisionComparisonResult,
+  CalibrationData,
+  CalibrationRequest,
+  ManualMeasuredRoute,
+  RouteCreateRequest,
+  RouteUpdateRequest,
 } from "@/types/cad";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -393,6 +398,120 @@ export const api = {
     type: "summary" | "breakdown" | "delta" = "summary"
   ): string => {
     return `${API_BASE}/api/projects/${projectId}/export/csv?type=${type}`;
+  },
+
+  // -------------------------------------------------- Calibration & Routes (Issue #37)
+  getCalibration: async (
+    projectId: string,
+    drawingId: string,
+    pageIndex = 0
+  ): Promise<CalibrationData> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/calibration?page_index=${pageIndex}`
+    );
+    return handleResponse(res);
+  },
+
+  saveCalibration: async (
+    projectId: string,
+    drawingId: string,
+    req: CalibrationRequest
+  ): Promise<CalibrationData> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/calibration`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      }
+    );
+    return handleResponse(res);
+  },
+
+  deleteCalibration: async (
+    projectId: string,
+    drawingId: string,
+    pageIndex = 0
+  ): Promise<{ status: string; drawing_id: string; page_index: number }> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/calibration?page_index=${pageIndex}`,
+      { method: "DELETE" }
+    );
+    return handleResponse(res);
+  },
+
+  listRoutes: async (
+    projectId: string,
+    drawingId: string,
+    pageIndex?: number
+  ): Promise<ManualMeasuredRoute[]> => {
+    const query = pageIndex !== undefined ? `?page_index=${pageIndex}` : "";
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/routes${query}`
+    );
+    return handleResponse(res);
+  },
+
+  createRoute: async (
+    projectId: string,
+    drawingId: string,
+    req: RouteCreateRequest
+  ): Promise<ManualMeasuredRoute> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/routes`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      }
+    );
+    return handleResponse(res);
+  },
+
+  updateRoute: async (
+    projectId: string,
+    drawingId: string,
+    routeId: string,
+    req: RouteUpdateRequest
+  ): Promise<ManualMeasuredRoute> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/routes/${routeId}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      }
+    );
+    return handleResponse(res);
+  },
+
+  deleteRoute: async (
+    projectId: string,
+    drawingId: string,
+    routeId: string
+  ): Promise<{ status: string; route_id: string }> => {
+    const res = await fetch(
+      `${API_BASE}/api/projects/${projectId}/drawings/${drawingId}/routes/${routeId}`,
+      { method: "DELETE" }
+    );
+    return handleResponse(res);
+  },
+
+  seedRouteOracleDemo: async (
+    reset = true
+  ): Promise<{
+    status: string;
+    project_id: string;
+    drawing_id: string;
+    calibration: CalibrationData;
+    route: ManualMeasuredRoute;
+    expected_length_m: number;
+  }> => {
+    const res = await fetch(
+      `${API_BASE}/api/demo/seed-route-oracle?reset=${reset ? "true" : "false"}`,
+      { method: "POST" }
+    );
+    return handleResponse(res);
   },
 };
 

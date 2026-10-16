@@ -30,6 +30,8 @@ from .image_parser import build_image_drawing, inspect_image
 from .models import (
     ActivateRevisionRequest,
     ApplyTemplateRequest,
+    CalibrationData,
+    CalibrationRequest,
     CandidateBulkReviewRequest,
     CandidatesResponse,
     CandidatesSummary,
@@ -42,14 +44,20 @@ from .models import (
     EvidenceReviewItem,
     InclusionStatus,
     ItemMappingRule,
+    ManualMeasuredRoute,
     ManualObjectItem,
     MappingTemplate,
     MappingTemplateCreate,
     MappingTemplateListResponse,
+    Point2D,
     ProjectCreate,
     ProjectMetadata,
     ProjectTakeoffResult,
     RevisionComparisonResult,
+    RouteCategory,
+    RouteCreateRequest,
+    RouteStatus,
+    RouteUpdateRequest,
     SheetRole,
     SymbolCandidate,
     SymbolSearchRequest,
@@ -74,7 +82,7 @@ app = FastAPI(
 
 allowed_origins_env = os.getenv(
     "EAI_ALLOWED_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3005,http://127.0.0.1:3005,http://localhost:8000,http://127.0.0.1:8000",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3005,http://127.0.0.1:3005,http://localhost:3008,http://127.0.0.1:3008,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8008,http://127.0.0.1:8008",
 )
 allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
 
@@ -1236,7 +1244,8 @@ def export_excel(
     if not result:
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
-    data = export_xlsx(result)
+    routes = storage.list_drawing_routes(project_id, drawing_id)
+    data = export_xlsx(result, routes=routes)
     filename = f"{result.drawing_name}_takeoff.xlsx"
     quoted = urllib.parse.quote(filename)
     comp_header = "provisional" if result.is_provisional else "confirmed"
@@ -1279,6 +1288,27 @@ def update_drawing_scope(
         raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
 
     scope = storage.get_drawing_scope(project_id, drawing_id)
+    target_role = req.sheet_role if req.sheet_role is not None else scope.sheet_role
+    target_active = req.active_for_takeoff if req.active_for_takeoff is not None else scope.active_for_takeoff
+    target_sheet_key = req.sheet_key if req.sheet_key is not None else scope.sheet_key
+
+    # Workstream 0 Guardrail 2: Non-installation drawings can NEVER be active for takeoff
+    if target_active and target_role != SheetRole.INSTALLATION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"시공 설치 도면(INSTALLATION)만 산출 활성화(active_for_takeoff=True)할 수 있습니다. (역할: {target_role})"
+        )
+
+    # Workstream 0 Guardrail 1: Multiple active REVs for same sheet_key are strictly rejected (409 Conflict)
+    if target_active:
+        all_scopes = storage.list_drawing_scopes(project_id)
+        for s in all_scopes:
+            if s.drawing_id != drawing_id and s.sheet_key == target_sheet_key and s.active_for_takeoff:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"동일 도면 그룹('{target_sheet_key}')에 이미 활성 도면('{s.drawing_id}')이 존재합니다. 단일 활성 REV만 허용됩니다. /activate-revision을 사용하거나 기존 활성 도면을 먼저 비활성화하세요."
+                )
+
     if req.sheet_key is not None:
         scope.sheet_key = req.sheet_key
     if req.floor is not None:
@@ -1318,8 +1348,11 @@ def activate_revision(
 
     active = req.active if req else True
     if active:
-        target_scope, _ = storage.activate_drawing_revision(project_id, drawing_id)
-        return target_scope
+        try:
+            target_scope, _ = storage.activate_drawing_revision(project_id, drawing_id)
+            return target_scope
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
     else:
         scope = storage.get_drawing_scope(project_id, drawing_id)
         scope.active_for_takeoff = False
@@ -1382,14 +1415,21 @@ def export_project_excel(project_id: str) -> Response:
                     pass
 
     active_takeoffs: list[TakeoffResult] = []
+    active_routes: list[ManualMeasuredRoute] = []
     for s in p_result.drawings_scope:
         if s.active_for_takeoff:
             t_res = storage.calculate_takeoff(project_id, s.drawing_id)
             if t_res:
                 active_takeoffs.append(t_res)
+            active_routes.extend(storage.list_drawing_routes(project_id, s.drawing_id))
 
-    data = export_project_xlsx(p_result, revision_deltas=deltas, active_takeoffs=active_takeoffs)
-    filename = f"{proj.name}_project_takeoff_4sheets.xlsx"
+    data = export_project_xlsx(
+        p_result,
+        revision_deltas=deltas,
+        active_takeoffs=active_takeoffs,
+        active_routes=active_routes,
+    )
+    filename = f"{proj.name}_project_takeoff.xlsx"
     quoted = urllib.parse.quote(filename)
     comp_header = "provisional" if p_result.is_provisional else "confirmed"
     return Response(
@@ -1451,6 +1491,251 @@ def export_project_csv_endpoint(
             "X-Takeoff-Unresolved-Count": str(p_result.unresolved_count),
         },
     )
+
+
+# -------------------------------------------------- Scale Calibration (Issue #37 Workstream A)
+@app.get(
+    "/api/projects/{project_id}/drawings/{drawing_id}/calibration",
+    response_model=CalibrationData,
+)
+def get_drawing_calibration(
+    project_id: str,
+    drawing_id: str,
+    page_index: int = Query(0, ge=0, description="PDF 페이지 인덱스 (0-based)"),
+) -> CalibrationData:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    return storage.get_drawing_calibration(project_id, drawing_id, page_index)
+
+
+@app.post(
+    "/api/projects/{project_id}/drawings/{drawing_id}/calibration",
+    response_model=CalibrationData,
+)
+def save_drawing_calibration(
+    project_id: str,
+    drawing_id: str,
+    req: CalibrationRequest,
+) -> CalibrationData:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    try:
+        return storage.save_drawing_calibration(project_id, drawing_id, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.delete("/api/projects/{project_id}/drawings/{drawing_id}/calibration")
+def delete_drawing_calibration(
+    project_id: str,
+    drawing_id: str,
+    page_index: int = Query(0, ge=0, description="PDF 페이지 인덱스 (0-based)"),
+) -> dict[str, Any]:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    storage.delete_drawing_calibration(project_id, drawing_id, page_index)
+    return {"status": "deleted", "drawing_id": drawing_id, "page_index": page_index}
+
+
+# -------------------------------------------------- Route Measurement (Issue #37 Workstream B & C)
+@app.get(
+    "/api/projects/{project_id}/drawings/{drawing_id}/routes",
+    response_model=list[ManualMeasuredRoute],
+)
+def list_drawing_routes(
+    project_id: str,
+    drawing_id: str,
+    page_index: int | None = Query(None, ge=0, description="페이지별 필터링 (선택)"),
+) -> list[ManualMeasuredRoute]:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    return storage.list_drawing_routes(project_id, drawing_id, page_index)
+
+
+@app.post(
+    "/api/projects/{project_id}/drawings/{drawing_id}/routes",
+    response_model=ManualMeasuredRoute,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_drawing_route(
+    project_id: str,
+    drawing_id: str,
+    req: RouteCreateRequest,
+) -> ManualMeasuredRoute:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    try:
+        return storage.create_drawing_route(project_id, drawing_id, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get(
+    "/api/projects/{project_id}/drawings/{drawing_id}/routes/{route_id}",
+    response_model=ManualMeasuredRoute,
+)
+def get_drawing_route(
+    project_id: str,
+    drawing_id: str,
+    route_id: str,
+) -> ManualMeasuredRoute:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    route = storage.get_drawing_route(project_id, drawing_id, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다.")
+    return route
+
+
+@app.put(
+    "/api/projects/{project_id}/drawings/{drawing_id}/routes/{route_id}",
+    response_model=ManualMeasuredRoute,
+)
+def update_drawing_route(
+    project_id: str,
+    drawing_id: str,
+    route_id: str,
+    req: RouteUpdateRequest,
+) -> ManualMeasuredRoute:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    try:
+        route = storage.update_drawing_route(project_id, drawing_id, route_id, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not route:
+        raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다.")
+    return route
+
+
+@app.delete("/api/projects/{project_id}/drawings/{drawing_id}/routes/{route_id}")
+def delete_drawing_route(
+    project_id: str,
+    drawing_id: str,
+    route_id: str,
+) -> dict[str, Any]:
+    drawing = storage.get_drawing(project_id, drawing_id)
+    if not drawing:
+        raise HTTPException(status_code=404, detail="도면을 찾을 수 없습니다.")
+    deleted = storage.delete_drawing_route(project_id, drawing_id, route_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다.")
+    return {"status": "deleted", "route_id": route_id}
+
+
+# -------------------------------------------------- Demo Seeding for Calibration & Route Oracle (Issue #37 Workstream D)
+@app.post("/api/demo/seed-route-oracle")
+def seed_route_oracle_demo(reset: bool = Query(True)) -> dict[str, Any]:
+    """Seed synthetic drawing with 100px reference calibrated to 10m and a 7.00m polyline route (30px + 40px = 70px)."""
+    proj_id = "demo_route_oracle"
+    if reset and storage.get_project(proj_id):
+        storage.delete_project(proj_id)
+
+    if not storage.get_project(proj_id):
+        storage.create_project(ProjectCreate(name="[데모] 2D 경로 측정 & 축척 보정 오라클"), project_id=proj_id)
+
+    import io as py_io
+
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (600, 400), color=(15, 23, 42))  # slate-900
+    draw = ImageDraw.Draw(img)
+
+    for x in range(0, 600, 50):
+        draw.line([(x, 0), (x, 400)], fill=(30, 41, 59), width=1)
+    for y in range(0, 400, 50):
+        draw.line([(0, y), (600, y)], fill=(30, 41, 59), width=1)
+
+    # Reference scale bar: 100px from (50, 50) to (150, 50)
+    draw.line([(50, 50), (150, 50)], fill=(56, 189, 248), width=3)
+    draw.line([(50, 45), (50, 55)], fill=(56, 189, 248), width=2)
+    draw.line([(150, 45), (150, 55)], fill=(56, 189, 248), width=2)
+
+    # Route demo guide: (100, 200) -> (130, 200) -> (130, 240)
+    draw.line([(100, 200), (130, 200)], fill=(245, 158, 11), width=2)
+    draw.line([(130, 200), (130, 240)], fill=(245, 158, 11), width=2)
+    for pt in [(100, 200), (130, 200), (130, 240)]:
+        draw.ellipse([(pt[0] - 3, pt[1] - 3), (pt[0] + 3, pt[1] + 3)], fill=(251, 191, 36))
+
+    img_bytes = py_io.BytesIO()
+    img.save(img_bytes, format="PNG")
+    raw_bytes = img_bytes.getvalue()
+
+    d_id = "oracle_drawing"
+    img_meta = inspect_image(raw_bytes, "oracle_drawing.png")
+    norm_dwg = build_image_drawing(img_meta, d_id)
+    storage.save_drawing(
+        proj_id,
+        norm_dwg,
+        revision="REV0",
+        raw_bytes=raw_bytes,
+        source_type="IMAGE",
+        file_type="PNG",
+        coordinate_space="IMAGE_PIXEL",
+        dimensions={"width": 600, "height": 400},
+    )
+
+    scope = DrawingScope(
+        drawing_id=d_id,
+        project_id=proj_id,
+        sheet_key="1F_LIGHT",
+        floor="1F",
+        discipline="ELEC_LIGHT",
+        revision="REV0",
+        sheet_role=SheetRole.INSTALLATION,
+        active_for_takeoff=True,
+        is_latest=True,
+        description="축척 보정 및 2D 계획 경로 오라클 도면 (100px=10m, 70px=7.00m)",
+    )
+    storage.save_drawing_scope(proj_id, d_id, scope)
+
+    calib = storage.save_drawing_calibration(
+        proj_id,
+        d_id,
+        CalibrationRequest(
+            page_index=0,
+            point_a=Point2D(x=50.0, y=50.0),
+            point_b=Point2D(x=150.0, y=50.0),
+            real_distance=10.0,
+            unit="m",
+            notes="기준 축척: 100px = 10.0m (10px = 1m)",
+        ),
+    )
+
+    route = storage.create_drawing_route(
+        proj_id,
+        d_id,
+        RouteCreateRequest(
+            page_index=0,
+            coordinate_space="IMAGE_PIXEL",
+            points=[
+                Point2D(x=100.0, y=200.0),
+                Point2D(x=130.0, y=200.0),
+                Point2D(x=130.0, y=240.0),
+            ],
+            category=RouteCategory.WIRING,
+            item_code="WIRING_POWER",
+            item_name="배선 (2D 계획 경로)",
+            spec="F-CV 2.5sq 2C",
+            review_note="1층 조명 전원 2D 계획 배선 (검증 정답 7.00m)",
+            status=RouteStatus.PROVISIONAL_CONFIRMED,
+        ),
+    )
+
+    return {
+        "status": "seeded",
+        "project_id": proj_id,
+        "drawing_id": d_id,
+        "calibration": calib.model_dump(mode="json"),
+        "route": route.model_dump(mode="json"),
+        "expected_length_m": 7.0,
+    }
 
 
 # -------------------------------------------------- Multi-Drawing Demo Seeding (Issue #35)

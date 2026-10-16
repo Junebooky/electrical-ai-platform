@@ -458,6 +458,8 @@ export interface ProjectTakeoffResult {
   project_name: string;
   total_active_drawings: number;
   total_inactive_drawings: number;
+  total_equipment_ea?: number;
+  total_route_length_m?: number;
   summary: ProjectTakeoffSummaryRow[];
   drawings_breakdown: DrawingTakeoffBreakdownItem[];
   drawings_scope: DrawingScope[];
@@ -465,6 +467,81 @@ export interface ProjectTakeoffResult {
   unresolved_count: number;
   is_provisional: boolean;
   exported_at: string;
+}
+
+export type CalibrationMethod = "TWO_POINT_MANUAL" | "KNOWN_SCALE_RATIO" | "CAD_HEADER_DEF";
+
+export interface CalibrationData {
+  drawing_id: string;
+  page_index: number;
+  method: CalibrationMethod;
+  point_a?: { x: number; y: number } | null;
+  point_b?: { x: number; y: number } | null;
+  pixel_distance?: number | null;
+  real_world_distance_m?: number | null;
+  scale_ratio_m_per_unit: number;
+  unit: string;
+  is_calibrated: boolean;
+  notes?: string;
+  calibrated_at?: string;
+}
+
+export interface CalibrationRequest {
+  page_index?: number;
+  method?: CalibrationMethod;
+  point_a?: { x: number; y: number } | null;
+  point_b?: { x: number; y: number } | null;
+  real_distance?: number | null;
+  scale_ratio_m_per_unit?: number | null;
+  unit?: string;
+  notes?: string;
+}
+
+export type RouteCategory = "WIRING" | "CONDUIT" | "CABLE_TRAY" | "BUS_DUCT" | "OTHER";
+export type RouteStatus = "DRAFT" | "PROVISIONAL_CONFIRMED";
+
+export interface ManualMeasuredRoute {
+  id: string;
+  drawing_id: string;
+  sheet_key?: string;
+  revision?: string;
+  page_index: number;
+  coordinate_space: "WORLD" | "IMAGE_PIXEL" | "PDF_PT";
+  points: { x: number; y: number }[];
+  category: RouteCategory;
+  item_code: string;
+  item_name: string;
+  spec: string;
+  raw_length: number;
+  length_2d_m?: number | null;
+  scale_ratio_m_per_unit?: number | null;
+  is_calibrated: boolean;
+  status: RouteStatus;
+  review_note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RouteCreateRequest {
+  page_index?: number;
+  coordinate_space?: "WORLD" | "IMAGE_PIXEL" | "PDF_PT";
+  points: { x: number; y: number }[];
+  category?: RouteCategory;
+  item_code?: string;
+  item_name?: string;
+  spec?: string;
+  review_note?: string;
+  status?: RouteStatus;
+}
+
+export interface RouteUpdateRequest {
+  points?: { x: number; y: number }[];
+  category?: RouteCategory;
+  item_code?: string;
+  item_name?: string;
+  spec?: string;
+  review_note?: string;
+  status?: RouteStatus;
 }
 
 export interface RevisionItemDelta {

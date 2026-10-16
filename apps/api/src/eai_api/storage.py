@@ -16,6 +16,9 @@ from cad_engine.schema import NormalizedDrawing, WarningCode
 from cad_engine.takeoff import BlockMapping, Disposition, aggregate
 
 from .models import (
+    CalibrationData,
+    CalibrationMethod,
+    CalibrationRequest,
     CandidateStatus,
     DrawingScope,
     DrawingSummary,
@@ -23,6 +26,7 @@ from .models import (
     EvidenceReviewItem,
     InclusionStatus,
     ItemMappingRule,
+    ManualMeasuredRoute,
     ManualObjectItem,
     MappingTemplate,
     MappingTemplateCreate,
@@ -35,6 +39,10 @@ from .models import (
     RevisionComparisonResult,
     RevisionItemDelta,
     RevisionObjectDelta,
+    RouteCategory,
+    RouteCreateRequest,
+    RouteStatus,
+    RouteUpdateRequest,
     SheetRole,
     SymbolCandidate,
     TakeoffEvidenceRow,
@@ -55,15 +63,15 @@ class Storage:
         self.templates_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------- Projects
-    def create_project(self, payload: ProjectCreate) -> ProjectMetadata:
-        project_id = f"proj_{uuid.uuid4().hex[:8]}"
-        proj_dir = self.projects_dir / project_id
+    def create_project(self, payload: ProjectCreate, project_id: str | None = None) -> ProjectMetadata:
+        pid = project_id or f"proj_{uuid.uuid4().hex[:8]}"
+        proj_dir = self.projects_dir / pid
         proj_dir.mkdir(parents=True, exist_ok=True)
         (proj_dir / "drawings").mkdir(exist_ok=True)
 
         now = datetime.now(UTC)
         meta = ProjectMetadata(
-            id=project_id,
+            id=pid,
             name=payload.name or "새 프로젝트",
             description=payload.description or "",
             created_at=now,
@@ -102,6 +110,13 @@ class Storage:
         if drawings_dir.exists():
             data["drawing_count"] = sum(1 for d in drawings_dir.iterdir() if d.is_dir())
         return ProjectMetadata(**data)
+
+    def delete_project(self, project_id: str) -> bool:
+        p_dir = self.projects_dir / project_id
+        if not p_dir.exists():
+            return False
+        shutil.rmtree(p_dir, ignore_errors=True)
+        return True
 
     # ------------------------------------------------------------- Drawings
     def save_drawing(
@@ -513,6 +528,7 @@ class Storage:
         reviews = self.get_reviews(project_id, drawing_id)
         manual_objects = self.get_manual_objects(project_id, drawing_id)
         candidates = self.get_candidates(project_id, drawing_id)
+        routes = self.list_drawing_routes(project_id, drawing_id)
 
         return build_takeoff_result(
             drawing=drawing,
@@ -521,7 +537,327 @@ class Storage:
             reviews=reviews,
             manual_objects=manual_objects,
             candidates=candidates,
+            routes=routes,
         )
+
+    # ------------------------------------------------------------- Calibration (Issue #37 Workstream A)
+    def get_drawing_calibration(
+        self, project_id: str, drawing_id: str, page_index: int = 0
+    ) -> CalibrationData:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        calib_file = d_dir / "calibrations.json"
+        if calib_file.exists():
+            try:
+                data = json.loads(calib_file.read_text(encoding="utf-8"))
+                if str(page_index) in data:
+                    return CalibrationData.model_validate(data[str(page_index)])
+            except Exception:
+                pass
+
+        meta = self.get_drawing_meta(project_id, drawing_id) or {}
+        source_type = meta.get("source_type", "DXF")
+        coord_space = meta.get("coordinate_space", "WORLD")
+
+        if source_type == "DXF":
+            insunits = meta.get("insunits", 0)
+            insunits_to_scale = {
+                1: (0.0254, "인치(Inches) 0.0254m"),
+                2: (0.3048, "피트(Feet) 0.3048m"),
+                4: (0.001, "밀리미터(mm) 0.001m"),
+                5: (0.01, "센티미터(cm) 0.01m"),
+                6: (1.0, "미터(m) 1.0m"),
+            }
+            if insunits in insunits_to_scale:
+                ratio, desc = insunits_to_scale[insunits]
+                return CalibrationData(
+                    drawing_id=drawing_id,
+                    page_index=page_index,
+                    coordinate_space=coord_space,
+                    scale_ratio_m_per_unit=ratio,
+                    is_calibrated=True,
+                    method=CalibrationMethod.DXF_INSUNITS,
+                    notes=f"DXF $INSUNITS={insunits} ({desc}) 기반 자동 축척 환산",
+                )
+            else:
+                return CalibrationData(
+                    drawing_id=drawing_id,
+                    page_index=page_index,
+                    coordinate_space=coord_space,
+                    scale_ratio_m_per_unit=None,
+                    is_calibrated=False,
+                    method=CalibrationMethod.DXF_INSUNITS,
+                    warning="DXF INSUNITS 미설정(0/단위미지정) 도면입니다. 실측 2점 축척 보정이 필요합니다.",
+                )
+        elif source_type == "PDF":
+            return CalibrationData(
+                drawing_id=drawing_id,
+                page_index=page_index,
+                coordinate_space="PDF_PAGE_POINT",
+                scale_ratio_m_per_unit=None,
+                is_calibrated=False,
+                method=CalibrationMethod.TWO_POINT_MANUAL,
+                warning=f"PDF {page_index + 1}페이지 미보정 상태입니다. 도면 위 두 점의 실제 거리를 입력해 축척을 보정하세요.",
+            )
+        else:  # IMAGE
+            return CalibrationData(
+                drawing_id=drawing_id,
+                page_index=page_index,
+                coordinate_space="IMAGE_PIXEL",
+                scale_ratio_m_per_unit=None,
+                is_calibrated=False,
+                method=CalibrationMethod.TWO_POINT_MANUAL,
+                warning="이미지 미보정 상태입니다. 도면 위 두 점의 실제 거리를 입력해 축척을 보정하세요.",
+            )
+
+    def save_drawing_calibration(
+        self, project_id: str, drawing_id: str, req: CalibrationRequest
+    ) -> CalibrationData:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        meta = self.get_drawing_meta(project_id, drawing_id) or {}
+        coord_space = meta.get("coordinate_space", "WORLD")
+        if meta.get("source_type") == "PDF":
+            coord_space = "PDF_PAGE_POINT"
+        elif meta.get("source_type") == "IMAGE":
+            coord_space = "IMAGE_PIXEL"
+
+        dx = req.point_b.x - req.point_a.x
+        dy = req.point_b.y - req.point_a.y
+        pixel_dist = math.hypot(dx, dy)
+        if pixel_dist <= 1e-6:
+            raise ValueError("두 점 사이의 거리가 너무 가깝거나 동일합니다. 서로 다른 두 점을 선택해 주세요.")
+
+        real_m = req.real_distance if req.unit == "m" else req.real_distance / 1000.0
+        if real_m <= 0 or not math.isfinite(real_m):
+            raise ValueError("실제 거리는 0보다 큰 유한한 숫자여야 합니다.")
+
+        scale_ratio = real_m / pixel_dist
+
+        calib = CalibrationData(
+            drawing_id=drawing_id,
+            page_index=req.page_index,
+            coordinate_space=coord_space,
+            point_a=req.point_a,
+            point_b=req.point_b,
+            pixel_distance=round(pixel_dist, 4),
+            real_world_distance_m=round(real_m, 4),
+            input_unit=req.unit,
+            scale_ratio_m_per_unit=scale_ratio,
+            is_calibrated=True,
+            method=CalibrationMethod.TWO_POINT_MANUAL,
+            notes=req.notes or f"2점 실측 보정: {pixel_dist:.1f}단위 = {real_m:.2f}m",
+            warning=None,
+            calibrated_at=datetime.now(UTC),
+        )
+
+        calib_file = d_dir / "calibrations.json"
+        calibs_dict: dict[str, Any] = {}
+        if calib_file.exists():
+            with contextlib.suppress(Exception):
+                calibs_dict = json.loads(calib_file.read_text(encoding="utf-8"))
+        calibs_dict[str(req.page_index)] = calib.model_dump(mode="json")
+        self._save_json(calib_file, calibs_dict)
+
+        self._recalculate_routes_for_page(project_id, drawing_id, req.page_index, calib)
+        return calib
+
+    def delete_drawing_calibration(
+        self, project_id: str, drawing_id: str, page_index: int = 0
+    ) -> None:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        calib_file = d_dir / "calibrations.json"
+        if calib_file.exists():
+            try:
+                calibs_dict = json.loads(calib_file.read_text(encoding="utf-8"))
+                if str(page_index) in calibs_dict:
+                    del calibs_dict[str(page_index)]
+                    self._save_json(calib_file, calibs_dict)
+            except Exception:
+                pass
+
+        fallback_calib = self.get_drawing_calibration(project_id, drawing_id, page_index)
+        self._recalculate_routes_for_page(project_id, drawing_id, page_index, fallback_calib)
+
+    def _recalculate_routes_for_page(
+        self, project_id: str, drawing_id: str, page_index: int, calib: CalibrationData
+    ) -> None:
+        routes = self.list_drawing_routes(project_id, drawing_id)
+        updated = False
+        for r in routes:
+            if r.page_index == page_index:
+                if calib.is_calibrated and calib.scale_ratio_m_per_unit:
+                    r.length_2d_m = round(r.raw_length * calib.scale_ratio_m_per_unit, 2)
+                    r.is_calibrated = True
+                    r.calibration_id = f"calib_{page_index}"
+                else:
+                    r.length_2d_m = None
+                    r.is_calibrated = False
+                    r.calibration_id = None
+                r.updated_at = datetime.now(UTC)
+                updated = True
+        if updated:
+            self._save_routes(project_id, drawing_id, routes)
+
+    # ------------------------------------------------------------- Route Measurement (Issue #37 Workstream B & C)
+    def list_drawing_routes(
+        self, project_id: str, drawing_id: str, page_index: int | None = None
+    ) -> list[ManualMeasuredRoute]:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        route_file = d_dir / "routes.json"
+        if not route_file.exists():
+            return []
+        try:
+            data = json.loads(route_file.read_text(encoding="utf-8"))
+            routes = [ManualMeasuredRoute.model_validate(item) for item in data]
+            if page_index is not None:
+                routes = [r for r in routes if r.page_index == page_index]
+            return routes
+        except Exception:
+            return []
+
+    def _save_routes(
+        self, project_id: str, drawing_id: str, routes: list[ManualMeasuredRoute]
+    ) -> None:
+        d_dir = self.projects_dir / project_id / "drawings" / drawing_id
+        d_dir.mkdir(parents=True, exist_ok=True)
+        self._save_json(d_dir / "routes.json", [r.model_dump(mode="json") for r in routes])
+
+    def get_drawing_route(
+        self, project_id: str, drawing_id: str, route_id: str
+    ) -> ManualMeasuredRoute | None:
+        routes = self.list_drawing_routes(project_id, drawing_id)
+        for r in routes:
+            if r.id == route_id:
+                return r
+        return None
+
+    def create_drawing_route(
+        self, project_id: str, drawing_id: str, req: RouteCreateRequest
+    ) -> ManualMeasuredRoute:
+        if len(req.points) < 2:
+            raise ValueError("경로는 최소 2개 이상의 좌표점이 필요합니다.")
+
+        meta = self.get_drawing_meta(project_id, drawing_id) or {}
+        scope = self.get_drawing_scope(project_id, drawing_id)
+
+        coord_space = req.coordinate_space or meta.get("coordinate_space", "WORLD")
+        if meta.get("source_type") == "PDF":
+            coord_space = "PDF_PAGE_POINT"
+        elif meta.get("source_type") == "IMAGE":
+            coord_space = "IMAGE_PIXEL"
+
+        raw_len = 0.0
+        for i in range(len(req.points) - 1):
+            p1 = req.points[i]
+            p2 = req.points[i + 1]
+            raw_len += math.hypot(p2.x - p1.x, p2.y - p1.y)
+
+        calib = self.get_drawing_calibration(project_id, drawing_id, req.page_index)
+        length_2d_m: float | None = None
+        is_calibrated = False
+        calib_id: str | None = None
+        if calib.is_calibrated and calib.scale_ratio_m_per_unit:
+            length_2d_m = round(raw_len * calib.scale_ratio_m_per_unit, 2)
+            is_calibrated = True
+            calib_id = f"calib_{req.page_index}"
+
+        item_code = req.item_code
+        item_name = req.item_name
+        if not item_code:
+            if req.category == RouteCategory.WIRING:
+                item_code = "ROUTE_WIRING"
+                item_name = item_name or "배선 (2D 계획 경로)"
+            elif req.category == RouteCategory.CONDUIT:
+                item_code = "ROUTE_CONDUIT"
+                item_name = item_name or "전선관 (2D 계획 경로)"
+            else:
+                item_code = "ROUTE_OTHER"
+                item_name = item_name or "기타 경로 (2D 계획 경로)"
+        else:
+            item_name = item_name or item_code
+
+        route = ManualMeasuredRoute(
+            id=f"route_{uuid.uuid4().hex[:8]}",
+            drawing_id=drawing_id,
+            sheet_key=scope.sheet_key if scope else None,
+            revision=scope.revision if scope else None,
+            page_index=req.page_index,
+            coordinate_space=coord_space,
+            points=req.points,
+            category=req.category,
+            item_code=item_code,
+            item_name=item_name,
+            spec=req.spec,
+            raw_length=round(raw_len, 4),
+            length_2d_m=length_2d_m,
+            is_calibrated=is_calibrated,
+            calibration_id=calib_id,
+            status=req.status,
+            review_note=req.review_note,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+        routes = self.list_drawing_routes(project_id, drawing_id)
+        routes.append(route)
+        self._save_routes(project_id, drawing_id, routes)
+        return route
+
+    def update_drawing_route(
+        self, project_id: str, drawing_id: str, route_id: str, req: RouteUpdateRequest
+    ) -> ManualMeasuredRoute | None:
+        routes = self.list_drawing_routes(project_id, drawing_id)
+        target: ManualMeasuredRoute | None = None
+        for r in routes:
+            if r.id == route_id:
+                target = r
+                break
+        if not target:
+            return None
+
+        if req.points is not None:
+            if len(req.points) < 2:
+                raise ValueError("경로는 최소 2개 이상의 좌표점이 필요합니다.")
+            target.points = req.points
+            raw_len = sum(
+                math.hypot(req.points[i + 1].x - req.points[i].x, req.points[i + 1].y - req.points[i].y)
+                for i in range(len(req.points) - 1)
+            )
+            target.raw_length = round(raw_len, 4)
+            calib = self.get_drawing_calibration(project_id, drawing_id, target.page_index)
+            if calib.is_calibrated and calib.scale_ratio_m_per_unit:
+                target.length_2d_m = round(raw_len * calib.scale_ratio_m_per_unit, 2)
+                target.is_calibrated = True
+            else:
+                target.length_2d_m = None
+                target.is_calibrated = False
+
+        if req.category is not None:
+            target.category = req.category
+        if req.item_code is not None:
+            target.item_code = req.item_code
+        if req.item_name is not None:
+            target.item_name = req.item_name
+        if req.spec is not None:
+            target.spec = req.spec
+        if req.status is not None:
+            target.status = req.status
+        if req.review_note is not None:
+            target.review_note = req.review_note
+
+        target.updated_at = datetime.now(UTC)
+        self._save_routes(project_id, drawing_id, routes)
+        return target
+
+    def delete_drawing_route(
+        self, project_id: str, drawing_id: str, route_id: str
+    ) -> bool:
+        routes = self.list_drawing_routes(project_id, drawing_id)
+        init_len = len(routes)
+        routes = [r for r in routes if r.id != route_id]
+        if len(routes) < init_len:
+            self._save_routes(project_id, drawing_id, routes)
+            return True
+        return False
 
     # -------------------------------------------------- Scope & Revision Registry
     def get_drawing_scope(self, project_id: str, drawing_id: str) -> DrawingScope:
@@ -598,6 +934,10 @@ class Storage:
     ) -> tuple[DrawingScope, list[DrawingScope]]:
         """Set target drawing active for takeoff, deactivating other revisions with the same sheet_key."""
         target_scope = self.get_drawing_scope(project_id, target_drawing_id)
+        if target_scope.sheet_role != SheetRole.INSTALLATION:
+            raise ValueError(
+                f"시공 설치 도면(INSTALLATION)만 수량 산출 활성화가 가능합니다. (현재 역할: {target_scope.sheet_role})"
+            )
         target_scope.active_for_takeoff = True
         target_scope.updated_at = datetime.now(UTC)
         self.save_drawing_scope(project_id, target_drawing_id, target_scope)
@@ -619,21 +959,23 @@ class Storage:
         project_name = proj.name if proj else "프로젝트"
 
         scopes = self.list_drawing_scopes(project_id)
-        active_scopes = [s for s in scopes if s.active_for_takeoff]
-        inactive_scopes = [s for s in scopes if not s.active_for_takeoff]
+        # Workstream 0 Guardrail 2: Only INSTALLATION drawings can contribute to takeoff!
+        active_scopes = [s for s in scopes if s.active_for_takeoff and s.sheet_role == SheetRole.INSTALLATION]
+        inactive_scopes = [s for s in scopes if not (s.active_for_takeoff and s.sheet_role == SheetRole.INSTALLATION)]
 
         scope_warnings: list[str] = []
-        # Check for duplicate active scopes in installation role
-        active_sheet_keys: dict[str, list[str]] = {}
+        # Workstream 0 Guardrail 1: Check for duplicate active scopes in installation role
+        active_sheet_keys: dict[str, list[DrawingScope]] = {}
         for s in active_scopes:
-            if s.sheet_role == SheetRole.INSTALLATION:
-                active_sheet_keys.setdefault(s.sheet_key, []).append(s.drawing_id)
+            active_sheet_keys.setdefault(s.sheet_key, []).append(s)
 
-        for sk, dwg_ids in active_sheet_keys.items():
-            if len(dwg_ids) > 1:
+        conflicted_sheet_keys: set[str] = set()
+        for sk, dwg_scopes in active_sheet_keys.items():
+            if len(dwg_scopes) > 1:
+                conflicted_sheet_keys.add(sk)
                 scope_warnings.append(
-                    f"동일 도면 그룹 '{sk}'에 복수의 활성 도면({len(dwg_ids)}개)이 활성화되어 있습니다. "
-                    "중복 합산 방지를 위해 단일 활성 REV를 지정해 주세요."
+                    f"동일 도면 그룹 '{sk}'에 복수의 활성 도면({len(dwg_scopes)}개)이 활성화되어 있어 "
+                    "중복 합산 방지를 위해 해당 그룹 산출이 보류(fail-closed)되었습니다. 단일 활성 REV를 지정해 주세요."
                 )
 
         drawings_breakdown: list[DrawingTakeoffBreakdownItem] = []
@@ -658,13 +1000,17 @@ class Storage:
                     active_for_takeoff=s.active_for_takeoff,
                     items=t_res.summary,
                     unresolved_count=t_res.unresolved_count,
-                    is_provisional=t_res.is_provisional,
+                    is_provisional=t_res.is_provisional or (s.sheet_key in conflicted_sheet_keys),
                 )
             )
 
-            if t_res.is_provisional:
+            if t_res.is_provisional or (s.sheet_key in conflicted_sheet_keys):
                 any_provisional = True
             total_unresolved += t_res.unresolved_count
+
+            # Fail-closed: do NOT aggregate conflicted sheet_keys into project summary
+            if s.sheet_key in conflicted_sheet_keys:
+                continue
 
             for row in t_res.summary:
                 # Key strictly separates item_code, unit, and specification
@@ -675,19 +1021,24 @@ class Storage:
                         "item_name": row.item_name,
                         "specification": row.specification,
                         "unit": row.unit,
-                        "total_quantity": 0,
+                        "total_quantity": 0 if row.unit == "EA" else 0.0,
                         "contributing_drawings": set(),
                         "is_provisional": False,
                         "review_status": ReviewStatus.REVIEWED,
                         "quantity_method": row.quantity_method,
                     }
                 agg_map[key]["total_quantity"] += row.quantity
+                if isinstance(agg_map[key]["total_quantity"], float):
+                    agg_map[key]["total_quantity"] = round(agg_map[key]["total_quantity"], 2)
                 agg_map[key]["contributing_drawings"].add(s.drawing_id)
                 if row.is_provisional or row.review_status != ReviewStatus.REVIEWED:
                     agg_map[key]["is_provisional"] = True
                     agg_map[key]["review_status"] = ReviewStatus.UNREVIEWED
 
         summary_rows: list[ProjectTakeoffSummaryRow] = []
+        total_equipment_ea = 0
+        total_route_length_m = 0.0
+
         for _key, d in sorted(agg_map.items(), key=lambda x: (x[0][0], x[0][1])):
             summary_rows.append(
                 ProjectTakeoffSummaryRow(
@@ -703,6 +1054,12 @@ class Storage:
                     notes=f"{len(d['contributing_drawings'])}개 활성 도면에서 합산",
                 )
             )
+            if d["unit"] == "EA" and isinstance(d["total_quantity"], (int, float)):
+                total_equipment_ea += int(d["total_quantity"])
+            elif d["unit"] == "m" and isinstance(d["total_quantity"], (int, float)):
+                total_route_length_m += float(d["total_quantity"])
+
+        total_route_length_m = round(total_route_length_m, 2)
 
         return ProjectTakeoffResult(
             project_id=project_id,
@@ -714,7 +1071,9 @@ class Storage:
             drawings_scope=scopes,
             scope_warnings=scope_warnings,
             unresolved_count=total_unresolved,
-            is_provisional=any_provisional,
+            is_provisional=any_provisional or bool(conflicted_sheet_keys),
+            total_equipment_ea=total_equipment_ea,
+            total_route_length_m=total_route_length_m,
             exported_at=datetime.now(UTC),
         )
 
@@ -736,15 +1095,15 @@ class Storage:
 
         all_keys = sorted(set(base_sum_map.keys()) | set(compare_sum_map.keys()))
         items_delta: list[RevisionItemDelta] = []
-        total_base = 0
-        total_compare = 0
+        total_base: int | float = 0
+        total_compare: int | float = 0
 
         for item_code, unit in all_keys:
             b_row = base_sum_map.get((item_code, unit))
             c_row = compare_sum_map.get((item_code, unit))
-            b_qty = b_row.quantity if b_row else 0
-            c_qty = c_row.quantity if c_row else 0
-            delta = c_qty - b_qty
+            b_qty = b_row.quantity if b_row else (0 if unit == "EA" else 0.0)
+            c_qty = c_row.quantity if c_row else (0 if unit == "EA" else 0.0)
+            delta = round(c_qty - b_qty, 2) if isinstance(c_qty, float) or isinstance(b_qty, float) else c_qty - b_qty
             total_base += b_qty
             total_compare += c_qty
 
@@ -880,8 +1239,8 @@ class Storage:
             object_deltas=object_deltas,
             total_base_qty=total_base,
             total_compare_qty=total_compare,
-            total_delta=total_compare - total_base,
-            notes=f"품목 총합 증감: {total_compare - total_base:+d}",
+            total_delta=round(total_compare - total_base, 2) if isinstance(total_compare, float) or isinstance(total_base, float) else total_compare - total_base,
+            notes=f"품목 총합 증감: {total_compare - total_base:+}",
         )
 
     def _save_json(self, path: Path, data: Any) -> None:
@@ -965,6 +1324,7 @@ def build_takeoff_result(
     reviews: dict[str, EvidenceReviewItem],
     manual_objects: list[ManualObjectItem],
     candidates: list[SymbolCandidate] | None = None,
+    routes: list[ManualMeasuredRoute] | None = None,
 ) -> TakeoffResult:
     """Build PRD 7.1 and 7.2 summary and evidence rows with user overrides."""
     # Convert mapping rules to takeoff BlockMapping with full unit and specification (ADR-005)
@@ -1559,7 +1919,77 @@ def build_takeoff_result(
             )
         )
 
-    summary_rows.sort(key=lambda s: s.item_code)
+    # 5. Process Manual Measured Routes (Issue #37 Workstream C)
+    if routes:
+        for r in routes:
+            evidence_rows.append(
+                TakeoffEvidenceRow(
+                    source_object_id=r.id,
+                    drawing_id=drawing.drawing_id,
+                    parent_source_id=None,
+                    block_name=f"[ROUTE:{r.category}]",
+                    layer_name="ROUTE",
+                    entity_type="POLYLINE_ROUTE",
+                    x=r.points[0].x,
+                    y=r.points[0].y,
+                    mapped_item_code=r.item_code,
+                    inclusion_status=InclusionStatus.INCLUDED if (r.status == RouteStatus.PROVISIONAL_CONFIRMED and r.is_calibrated and r.length_2d_m is not None) else InclusionStatus.EXCLUDED,
+                    review_status=ReviewStatus.REVIEWED if (r.status == RouteStatus.PROVISIONAL_CONFIRMED and r.is_calibrated) else ReviewStatus.UNRESOLVED,
+                    review_reason=r.review_note or (f"2D 계획 경로 (길이 {r.length_2d_m or 0.0}m, 원시 {r.raw_length:.1f})" if r.is_calibrated else "미보정 경로 (0m)"),
+                    page_index=r.page_index if is_pdf_dwg else None,
+                    source_type=getattr(drawing, "source_type", None) or ("PDF" if is_pdf_dwg else ("IMAGE" if is_image_dwg else "DXF")),
+                    file_type=getattr(drawing, "file_type", None) or ("PDF" if is_pdf_dwg else ("IMAGE" if is_image_dwg else "DXF")),
+                    coordinate_space=r.coordinate_space,
+                )
+            )
+
+        route_groups: dict[tuple[str, str], list[ManualMeasuredRoute]] = {}
+        for r in routes:
+            if r.status == RouteStatus.PROVISIONAL_CONFIRMED:
+                route_groups.setdefault((r.item_code, r.spec), []).append(r)
+
+        for (r_code, r_spec), r_list in sorted(route_groups.items()):
+            calibrated = [r for r in r_list if r.is_calibrated and r.length_2d_m is not None]
+            uncalibrated = [r for r in r_list if not (r.is_calibrated and r.length_2d_m is not None)]
+            r_first = r_list[0]
+            if calibrated:
+                tot_len = round(sum(r.length_2d_m for r in calibrated if r.length_2d_m is not None), 2)
+                notes_str = f"수동 2D 계획 경로 {len(calibrated)}구간 측정치 잠정 합산 (m)"
+                if uncalibrated:
+                    notes_str += f" [미보정 {len(uncalibrated)}구간 0m 제외]"
+                summary_rows.append(
+                    TakeoffSummaryRow(
+                        item_code=r_code,
+                        item_name=r_first.item_name,
+                        specification=r_spec,
+                        unit="m",
+                        quantity=tot_len,
+                        quantity_method=QuantityMethod.MANUAL,
+                        review_status=ReviewStatus.REVIEWED,
+                        drawing_name=drawing_name,
+                        drawing_revision=revision,
+                        notes=notes_str,
+                        is_provisional=True,
+                    )
+                )
+            elif uncalibrated:
+                summary_rows.append(
+                    TakeoffSummaryRow(
+                        item_code=r_code,
+                        item_name=r_first.item_name,
+                        specification=r_spec,
+                        unit="m",
+                        quantity=0.0,
+                        quantity_method=QuantityMethod.MANUAL,
+                        review_status=ReviewStatus.UNRESOLVED,
+                        drawing_name=drawing_name,
+                        drawing_revision=revision,
+                        notes=f"미보정 경로 {len(uncalibrated)}구간 (실측 거리 미보정으로 수량 0m 처리)",
+                        is_provisional=True,
+                    )
+                )
+
+    summary_rows.sort(key=lambda s: (s.unit, s.item_code))
 
     unresolved_count = sum(
         1
