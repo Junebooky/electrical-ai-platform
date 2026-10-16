@@ -273,7 +273,7 @@ export default function WorkspacePage() {
     });
   };
 
-  // Safe page navigation canceling pending marker on page switch (P0-01)
+  // Safe page navigation canceling pending marker on page switch (P0-01, Risk-2)
   const handlePageChange = (newIndex: number) => {
     if (pendingManualCoord) {
       setPendingManualCoord(null);
@@ -281,6 +281,7 @@ export default function WorkspacePage() {
     setCurrentPageIndex(newIndex);
     setSelectedObjectId(null);
     setSelectedFeature(null);
+    setPageFeatures(null);
   };
 
   // Confirm manual object addition after mandatory item & reason selection
@@ -327,6 +328,8 @@ export default function WorkspacePage() {
     let isCancelled = false;
     async function loadFeatures() {
       if (!showFeatures || !currentProject || !currentDrawing || currentDrawing.source_type !== "PDF") {
+        setPageFeatures(null);
+        setSelectedFeature(null);
         return;
       }
       setIsFeaturesLoading(true);
@@ -575,7 +578,10 @@ export default function WorkspacePage() {
               {isFeaturesLoading ? (
                 <span className="text-[10px] text-sky-300 animate-pulse">로딩 중...</span>
               ) : (
-                pageFeatures && (
+                pageFeatures &&
+                pageFeatures.page_index === currentPageIndex &&
+                currentDrawing &&
+                pageFeatures.drawing_id === currentDrawing.drawing_id && (
                   <span className="text-[10px] bg-sky-950/90 px-1 py-0.5 rounded text-sky-200 border border-sky-600/50">
                     T:{pageFeatures.texts.length} P:{pageFeatures.paths.length}
                   </span>
@@ -677,7 +683,14 @@ export default function WorkspacePage() {
                     ? api.getImageUrl(currentProject.id, currentDrawing.drawing_id)
                     : null
                 }
-                features={pageFeatures}
+                features={
+                  pageFeatures &&
+                  pageFeatures.page_index === currentPageIndex &&
+                  currentDrawing &&
+                  pageFeatures.drawing_id === currentDrawing.drawing_id
+                    ? pageFeatures
+                    : null
+                }
                 showFeatures={showFeatures}
                 selectedFeatureId={selectedFeature?.source_object_id || null}
                 onSelectFeature={(feat) => {
@@ -687,7 +700,9 @@ export default function WorkspacePage() {
               />
 
               {/* Selected Vector Feature Inspection Card (PR C) */}
-              {selectedFeature && (
+              {selectedFeature &&
+                selectedFeature.page_index === currentPageIndex &&
+                currentDrawing && (
                 <div
                   data-testid="selected-feature-card"
                   className="absolute bottom-6 right-6 z-30 w-96 bg-slate-900/95 backdrop-blur-md border border-sky-500/50 rounded-xl shadow-2xl p-4 text-slate-200"

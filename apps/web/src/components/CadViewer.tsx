@@ -559,7 +559,11 @@ export function CadViewer({
           })}
 
           {/* PR C: Vector PDF Text & Path Features Overlay */}
-          {isPdf && showFeatures && features && (
+          {isPdf &&
+            showFeatures &&
+            features &&
+            features.page_index === (currentPageIndex ?? 0) &&
+            features.drawing_id === drawing.drawing_id && (
             <g className="pdf-vector-features">
               {/* Paths / Lines / Rects */}
               {features.paths.map((p) => {

@@ -170,3 +170,18 @@ def test_pdf_features_dxf_drawing_rejection(client: TestClient) -> None:
     f_resp = client.get(f"/api/projects/{project_id}/drawings/{drawing_id}/pages/0/features")
     assert f_resp.status_code == 400
     assert "PDF 도면만" in f_resp.json()["detail"]
+
+
+def test_pdf_features_streaming_bounded_inspection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify bounded streaming traversal without full materialization (Issue #24 review)."""
+    import eai_api.pdf_features as feat_mod
+
+    # Set tight inspection budget of 1 object
+    monkeypatch.setattr(feat_mod, "MAX_INSPECTED_OBJECTS", 1)
+
+    pdf_bytes = Path("fixtures/pdf/pdf_c_vector_features.pdf").read_bytes()
+    res = feat_mod.extract_pdf_page_features(pdf_bytes, 0, "bounded_test")
+
+    # Path features should be bounded by inspected count (at most 1)
+    assert len(res.paths) <= 1
+    assert any("페이지 객체 순회 한도" in w for w in res.warnings)

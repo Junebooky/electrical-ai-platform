@@ -18,6 +18,7 @@ from .pdf_parser import PdfCorruptError, pdf_native_to_canonical
 
 MAX_PAGE_TEXTS = 5_000
 MAX_PAGE_PATHS = 10_000
+MAX_INSPECTED_OBJECTS = 20_000
 MAX_TEXT_LEN = 1_000
 
 
@@ -164,13 +165,18 @@ def extract_pdf_page_features(
     except Exception as e:
         warnings.append(f"텍스트 추출 중 오류가 발생했습니다: {e}")
 
-    # 2. Extract Vector Line/Path/Rect Features
+    # 2. Extract Vector Line/Path/Rect Features (Streaming traversal with bounded budget)
     try:
-        objs = list(page.get_objects())
-        for obj in objs:
+        for inspected_count, obj in enumerate(page.get_objects(), start=1):
+            if inspected_count > MAX_INSPECTED_OBJECTS:
+                warnings.append(
+                    f"페이지 객체 순회 한도({MAX_INSPECTED_OBJECTS:,}건)에 도달하여 추가 객체 분석이 중단되었습니다."
+                )
+                break
+
             if len(path_features) >= MAX_PAGE_PATHS:
                 warnings.append(
-                    f"경로/도형 추출 건수({len(objs)}건)가 안전 상한({MAX_PAGE_PATHS}건)을 초과하여 일부 항목이 생략되었습니다."
+                    f"경로/도형 추출 건수가 안전 상한({MAX_PAGE_PATHS:,}건)을 초과하여 일부 항목이 생략되었습니다."
                 )
                 break
 
